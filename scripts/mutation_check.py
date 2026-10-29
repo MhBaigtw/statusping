@@ -36,6 +36,11 @@ MUTATIONS = [
         ["tests/test_checks.py"],
     ),
     (
+        "M5 drop the total deadline (per-read timeouts only, like plain httpx)",
+        [("apps/core/safe_http.py", "return self._stream.read(max_bytes, self._budget(timeout, httpcore.ReadTimeout))", "return self._stream.read(max_bytes, timeout)")],
+        ["tests/test_deadline.py"],
+    ),
+    (
         "M3 remove the locked_by guard on finish",
         [("apps/jobs/queue.py", "status=S.RUNNING, locked_by=worker_id)", "status=S.RUNNING)")],
         ["tests/test_queue.py"],

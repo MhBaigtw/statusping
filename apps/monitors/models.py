@@ -6,6 +6,11 @@ from django.utils import timezone
 
 from apps.organizations.models import Organization
 
+# Hard ceiling for a monitor's timeout_seconds. It is also the worst-case duration of one
+# check (safe_http enforces it as a total budget), which apps/core/checks.py compares
+# with JOB_LEASE_SECONDS.
+MONITOR_MAX_TIMEOUT_SECONDS = 10
+
 
 def default_interval():
     return settings.MONITOR_DEFAULT_INTERVAL_SECONDS
@@ -35,7 +40,8 @@ class Monitor(models.Model):
         default=default_interval, validators=[MinValueValidator(60), MaxValueValidator(3600)]
     )
     timeout_seconds = models.PositiveSmallIntegerField(
-        default=default_timeout, validators=[MinValueValidator(1), MaxValueValidator(10)]
+        default=default_timeout,
+        validators=[MinValueValidator(1), MaxValueValidator(MONITOR_MAX_TIMEOUT_SECONDS)],
     )
     expected_status = models.PositiveSmallIntegerField(
         default=200, validators=[MinValueValidator(100), MaxValueValidator(599)]

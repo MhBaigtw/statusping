@@ -69,10 +69,8 @@ Each entry gives the choice, the alternatives considered, and the reason.
 - **Limitations:**
   - Only one address is tried. IPv4 is preferred, falling back to the first IPv6; there is no
     happy-eyeballs fallback to another address.
-  - httpx timeouts are per phase (connect, write, each read), not a total deadline. A target that drips
-    response headers slowly can stretch a check beyond `timeout_seconds`. The 60 s job lease and the
-    reaper bound the impact. A hard total deadline would need the request on a separate thread and is
-    left for Phase 3 if measurements show it matters.
+  - ~~httpx timeouts are per phase, not a total deadline.~~ Fixed in Checkpoint 2: one total budget per
+    request, enforced at the socket level (D24).
 
 ## D5. The loopback switch for the e2e run exists only in DEBUG
 
@@ -306,3 +304,59 @@ Each entry gives the choice, the alternatives considered, and the reason.
 due. So the "never twice" tests still pass under M1 and M2. What SKIP LOCKED buys is that claimers never
 wait for each other, and the no-waiting tests check exactly that. M1b and M2b remove the lock entirely, to
 show that the double-claim tests do fail without it.
+
+---
+
+# Checkpoint 2
+
+## D24. One total time budget per outbound request, checked against the job lease (review fix A1, A2)
+
+- **Problem (architect review):** httpx timeouts apply per operation. A server that sends one response
+  header byte every few seconds never trips a 5 s read timeout, so a check could run past
+  `JOB_LEASE_SECONDS` (60). The reaper would then treat a live job as crashed, and the check would run
+  twice.
+- **Choice:** `safe_http.send(..., timeout=T)` treats `T` as the **total** budget for DNS, TCP connect,
+  TLS handshake, writing the request and reading the response head. On expiry it raises
+  `httpx.TimeoutException`, which a check records as `error="timeout"`.
+- **How:**
+  - A monotonic deadline is set when the request starts.
+  - httpcore's network backend is wrapped (`_DeadlineBackend` / `_DeadlineStream`) so that every
+    `connect_tcp`, `start_tls`, `read` and `write` gets `min(its own timeout, time left)`. Once no time
+    is left it fails immediately. A drip-fed response therefore ends at the deadline, not after the
+    hundredth fresh 1-byte read.
+  - DNS cannot be given a timeout (`getaddrinfo` blocks), so the lookup runs in a small thread pool and
+    the caller stops waiting at the deadline. Any DNS time is taken from the same budget.
+  - Redirects are still never followed (D4), so a redirect chain costs exactly one request.
+  - The response body is never read, so its size cost is zero bytes. httpcore bounds the size of the
+    response head it buffers.
+- **Alternatives:**
+  - A watchdog thread that closes the socket. Closing a socket under a blocked `recv` is unreliable
+    across platforms, and it is racy.
+  - Running each request in a thread and abandoning it on timeout. That leaks threads and connections
+    and doesn't stop the I/O.
+  - Async httpx with `asyncio.timeout`. That would mean rewriting the worker around an event loop.
+- **Trade-off:** httpx has no public hook for the network backend, so `_DeadlineTransport` replaces
+  `HTTPTransport._pool` with an identical `ConnectionPool` on the deadline backend. That's a private
+  attribute. httpx is pinned (0.28.1), and real-socket tests fail if the swap stops taking effect.
+- **Tests** (`tests/test_deadline.py`, real sockets on 127.0.0.1 against misbehaving servers):
+  - a drip-fed response is cut off at 1.0 s, with a control test showing plain httpx with the same
+    timeout keeps reading;
+  - a stalled TLS handshake is cut off;
+  - slow DNS counts against the budget;
+  - DNS time reduces the time left for the request;
+  - a 302 loop costs one request;
+  - a worst-case check job finishes well inside a 5 s lease.
+  - Mutation M5, which restores per-read timeouts, makes the drip tests fail.
+- **Lease relationship (A2):** each job's worst-case network time is now a known constant:
+  - `run_check` ≤ `MONITOR_MAX_TIMEOUT_SECONDS` (10, the model's ceiling for `timeout_seconds`);
+  - `deliver_alert` and `send_test_alert` ≤ `ALERT_TIMEOUT_SECONDS` (5).
+  - Around that sit a few short DB statements. The delivery row lock is held during the POST, so that
+    POST is bounded by the same budget.
+- **Startup check:** a Django system check (`apps/core/checks.py`, which runs before `run_worker`,
+  `runserver`, `migrate` and `check --deploy`) refuses to start when
+  `JOB_LEASE_SECONDS < 3 × max(MONITOR_MAX_TIMEOUT_SECONDS, ALERT_TIMEOUT_SECONDS)`. With the defaults
+  that is 60 ≥ 30.
+  - The factor of 3 covers DB round trips, GC pauses and a loaded machine.
+  - The check also errors if the default monitor timeout exceeds the ceiling, and warns when
+    `WORKER_SHUTDOWN_TIMEOUT_SECONDS` is shorter than the longest job, because a graceful shutdown would
+    then abandon in-flight jobs to the reaper.

@@ -68,6 +68,73 @@ class _WebhookHandler(_Quiet):
         self.end_headers()
 
 
+class SlowServer:
+    """A raw-socket server on 127.0.0.1 that misbehaves on purpose.
+
+    mode="drip":     sends a status line, then one header line every `interval` seconds,
+                     forever (each read succeeds quickly, so per-read timeouts never fire)
+    mode="stall":    accepts the TCP connection and never sends a byte (stalls TLS)
+    mode="redirect": answers every request with 302 to itself
+    """
+
+    def __init__(self, mode, interval=0.2, lifetime=6.0):
+        import socket
+
+        self.mode = mode
+        self.interval = interval
+        self.lifetime = lifetime
+        self.sock = socket.create_server(("127.0.0.1", 0))
+        self.port = self.sock.getsockname()[1]
+        self.requests = 0
+        self._stop = threading.Event()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+
+    def url(self, path="/", scheme="http"):
+        return f"{scheme}://127.0.0.1:{self.port}{path}"
+
+    def _serve(self):
+        self.sock.settimeout(0.1)
+        while not self._stop.is_set():
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                continue
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+    def _handle(self, conn):
+        import time
+
+        deadline = time.monotonic() + self.lifetime
+        try:
+            if self.mode == "stall":
+                while not self._stop.is_set() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                return
+            conn.settimeout(2)
+            conn.recv(65536)
+            self.requests += 1
+            if self.mode == "redirect":
+                conn.sendall(b"HTTP/1.1 302 Found\r\nLocation: /again\r\nContent-Length: 0\r\n\r\n")
+                return
+            conn.sendall(b"HTTP/1.1 200 OK\r\n")
+            while not self._stop.is_set() and time.monotonic() < deadline:
+                conn.sendall(b"X-Drip: a\r\n")
+                time.sleep(self.interval)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self.thread.join(2)
+        self.sock.close()
+
+
 class FakeWebhook(_Server):
     def __init__(self):
         super().__init__(_WebhookHandler)

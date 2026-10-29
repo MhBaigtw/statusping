@@ -13,6 +13,13 @@ Every outbound request in StatusPing (monitor checks, webhook alerts) goes throu
    neither can a URL-parser disagreement, because the socket target is the IP we checked.
 4. Never follows redirects and ignores proxy environment variables (trust_env=False),
    since a proxy would make the connection target something we did not validate.
+5. Enforces ONE total time budget (`timeout`) for the whole request: DNS, TCP connect,
+   TLS handshake, writing the request and reading the response headers. httpx timeouts
+   are per operation, so a server that drips one header byte at a time would never
+   trip them. Here every socket operation gets min(its timeout, time left), and the
+   request fails with a timeout once the deadline passes (see _DeadlineStream).
+   The response body is never read (only the status code matters), and httpcore caps
+   the size of the response head it will buffer.
 
 Tests never touch real DNS: they patch `_getaddrinfo` (see tests/conftest.py).
 """
@@ -21,10 +28,13 @@ import ipaddress
 import socket
 import ssl
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from functools import cache
 
 import certifi
+import httpcore
 import httpx
 from django.conf import settings
 
@@ -82,15 +92,31 @@ def _getaddrinfo(host, port):
     return socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
 
 
-def resolve(host, port):
-    """All addresses the host resolves to (an IP literal resolves to itself)."""
+# getaddrinfo cannot be given a timeout, so lookups run here and the caller stops waiting
+# at its deadline. A lookup that hangs keeps one of these threads until the OS gives up.
+_dns_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="dns")
+
+
+def resolve(host, port, *, deadline=None):
+    """All addresses the host resolves to (an IP literal resolves to itself).
+
+    With a `deadline` (time.monotonic() value), raises httpx.ConnectTimeout if the
+    lookup has not finished by then.
+    """
     try:
         ipaddress.ip_address(host)
         return (host,)
     except ValueError:
         pass
     try:
-        infos = _getaddrinfo(host, port)
+        if deadline is None:
+            infos = _getaddrinfo(host, port)
+        else:
+            future = _dns_pool.submit(_getaddrinfo, host, port)
+            try:
+                infos = future.result(timeout=max(0.0, deadline - time.monotonic()))
+            except FutureTimeout:
+                raise httpx.ConnectTimeout("DNS lookup exceeded the time budget.") from None
     except (OSError, UnicodeError) as exc:  # socket.gaierror is an OSError
         raise DNSFailure(f"Could not resolve {host}.") from exc
     addresses = tuple(dict.fromkeys(info[4][0] for info in infos))
@@ -134,10 +160,10 @@ def blocked_reason(address):
     return _classify(ip)
 
 
-def validate_target(url):
+def validate_target(url, *, deadline=None):
     """Full validation: URL shape, DNS, and every resolved address. Returns a Target."""
     parsed, host, port = parse_url(url)
-    addresses = resolve(host, port)
+    addresses = resolve(host, port, deadline=deadline)
     for address in addresses:
         if reason := blocked_reason(address):
             raise BlockedTarget(f"{host} resolves to a non-public address ({reason}).")
@@ -157,13 +183,78 @@ def _ssl_context():
     return ssl.create_default_context(cafile=certifi.where())
 
 
+class _DeadlineStream(httpcore.NetworkStream):
+    """A socket stream whose every operation is clamped to the time left before `deadline`."""
+
+    def __init__(self, stream, deadline):
+        self._stream = stream
+        self._deadline = deadline
+
+    def _budget(self, timeout, exc_class):
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise exc_class("Request exceeded its total time budget.")
+        return remaining if timeout is None else min(timeout, remaining)
+
+    def read(self, max_bytes, timeout=None):
+        return self._stream.read(max_bytes, self._budget(timeout, httpcore.ReadTimeout))
+
+    def write(self, buffer, timeout=None):
+        self._stream.write(buffer, self._budget(timeout, httpcore.WriteTimeout))
+
+    def close(self):
+        self._stream.close()
+
+    def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+        budget = self._budget(timeout, httpcore.ConnectTimeout)
+        return _DeadlineStream(
+            self._stream.start_tls(ssl_context, server_hostname, budget), self._deadline
+        )
+
+    def get_extra_info(self, info):
+        return self._stream.get_extra_info(info)
+
+
+class _DeadlineBackend(httpcore.NetworkBackend):
+    def __init__(self, deadline):
+        self._backend = httpcore.SyncBackend()
+        self._deadline = deadline
+
+    def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise httpcore.ConnectTimeout("Request exceeded its total time budget.")
+        budget = remaining if timeout is None else min(timeout, remaining)
+        stream = self._backend.connect_tcp(host, port, budget, local_address, socket_options)
+        return _DeadlineStream(stream, self._deadline)
+
+    def connect_unix_socket(self, *args, **kwargs):  # pragma: no cover - never used
+        raise NotImplementedError
+
+    def sleep(self, seconds):  # pragma: no cover - only used by httpcore retries (off)
+        time.sleep(seconds)
+
+
+class _DeadlineTransport(httpx.HTTPTransport):
+    def __init__(self, deadline):
+        super().__init__(verify=_ssl_context(), trust_env=False)
+        # httpx has no public hook for the network backend, so replace the connection pool
+        # it built with an identical one on the deadline backend. httpx (and so this
+        # attribute) is pinned in requirements.txt; test_ssrf.py covers the swap.
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=_ssl_context(), network_backend=_DeadlineBackend(deadline)
+        )
+
+
 def send(method, url, *, timeout, json=None, headers=None):
     """Validate `url`, then make one request to the validated IP. The body is never read.
 
-    Raises BlockedTarget, DNSFailure, or an httpx.HTTPError for network failures.
-    `timeout` applies to each network phase (connect, write, each read).
+    `timeout` is the TOTAL budget in seconds for DNS + connect + TLS + request + response
+    headers. Raises BlockedTarget, DNSFailure, or an httpx.HTTPError for network failures
+    (httpx.TimeoutException when the budget runs out).
     """
-    target = validate_target(url)
+    deadline = time.monotonic() + timeout
+    target = validate_target(url, deadline=deadline)
     address = _pick_address(target.addresses)
     pinned_url = target.url.copy_with(host=address)
     request_headers = {
@@ -175,7 +266,10 @@ def send(method, url, *, timeout, json=None, headers=None):
     started = time.perf_counter()
     with (
         httpx.Client(
-            verify=_ssl_context(), timeout=timeout, follow_redirects=False, trust_env=False
+            transport=_DeadlineTransport(deadline),
+            timeout=timeout,
+            follow_redirects=False,
+            trust_env=False,
         ) as client,
         client.stream(
             method, pinned_url, headers=request_headers, json=json, extensions=extensions
