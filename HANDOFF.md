@@ -1,7 +1,6 @@
 # HANDOFF: StatusPing Checkpoint 1 (Phases 1-2)
 
-- **Status:** done locally. Not pushed yet: creating the public repo `MhBaigtw/statusping` and pushing
-  `main` wait for Humayun's approval, so the CI result is **not verified yet**.
+- **Status:** done. The public repo was created and `main` pushed with Humayun's approval. CI is green.
 - **Versions:** Python 3.13.3 (CI pins 3.13), Django 5.2.18, DRF 3.18.3, SimpleJWT 5.5.1, drf-spectacular
   0.30.0, psycopg 3.3.6, httpx 0.28.1, PostgreSQL 16.14 (native Windows service).
 - **Machine:** Windows 11 Home, 7.33 GB RAM. Free RAM at the start was **0.90 GB**, and 0.35–0.43 GB
@@ -217,11 +216,24 @@ the final run), and the leftover rows were paused.
 eb519d6 feat: foundation, accounts, organizations, monitors and SSRF protection
 ```
 
-(The commit adding this HANDOFF follows.)
+8d25449 docs: checkpoint 1 handoff, README, decisions and tasks  (CI verified on this commit)
 
 ### CI
 
-**Not run yet.** It needs the repo to exist and `main` to be pushed (waiting for approval).
+GitHub Actions run 40970739665 on commit `8d25449` (Ubuntu, Postgres 16, Python 3.13) is **green**. All
+steps passed: ruff lint, ruff format, migrations, `check --deploy` with prod settings, schema validation,
+and tests.
+
+```
+Required test coverage of 85% reached. Total coverage: 97.53%
+379 passed in 19.02s
+```
+
+- The worker-process test also passed on Linux, where it stops the worker with a real SIGTERM rather than
+  CTRL_BREAK.
+- **Annotations (warnings only):** `actions/checkout@v4` and `setup-python@v5` target Node 20, which is
+  deprecated (GitHub forces Node 24), and `ubuntu-latest` is migrating to Ubuntu 26. Bumping the action
+  versions is a small follow-up.
 
 ## Bugs found and test changes
 
@@ -259,12 +271,7 @@ eb519d6 feat: foundation, accounts, organizations, monitors and SSRF protection
 
 ## Actions for Humayun
 
-1. **Approve creating the public repo and pushing `main`.** On approval I would run:
-   ```powershell
-   gh repo create MhBaigtw/statusping --public --source . --remote origin --description "Multi-tenant uptime monitoring API with a from-scratch Postgres job queue"
-   git push -u origin main
-   gh run watch   # then report the CI result
-   ```
+1. Nothing is blocking. The repo is public and CI is green.
 2. **Optional:** create a Discord webhook (Server Settings → Integrations → Webhooks) if you want one
    manual real-delivery check. Don't paste the URL anywhere public. Add it through the API as an alert
    channel and use its `test` action.
@@ -272,5 +279,6 @@ eb519d6 feat: foundation, accounts, organizations, monitors and SSRF protection
 
 ## Repo URL and latest commit
 
-- Repo: not created yet (pending approval). Intended: https://github.com/MhBaigtw/statusping
-- Latest commit: the HANDOFF commit on top of `4b07ea0` (`git log -1` gives the hash).
+- Repo: https://github.com/MhBaigtw/statusping
+- CI verified on `8d25449`. The only later commit is this HANDOFF update (docs only); `git log -1` gives
+  its hash.

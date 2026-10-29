@@ -29,8 +29,8 @@
 - [x] Mutation checks (SKIP LOCKED x2, no-lock x2, locked_by guard, delivery lock, delivery uniqueness)
 - [x] scripts/e2e.py live run with fake target + fake webhook
 - [x] README, HANDOFF, decisions
-- [ ] Humayun approves creating MhBaigtw/statusping and pushing main
-- [ ] Confirm the GitHub Actions result after the push
+- [x] Humayun approved; created MhBaigtw/statusping and pushed main
+- [x] GitHub Actions green (run 40970739665: 379 passed, 97.53%)
 
 ## Phase 3 (not started)
 - [ ] Public status page GET /status/{org_slug}/ (JSON + minimal HTML) with 24h/7d/30d uptime
