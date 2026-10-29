@@ -1,0 +1,306 @@
+# Decision log
+
+Each entry gives the choice, the alternatives considered, and the reason.
+
+## D1. The job queue is built on PostgreSQL, not Celery + Redis
+
+- **Choice:** the queue is a plain `jobs_job` table (`apps/jobs/queue.py`). Workers claim jobs with
+  `SELECT … FOR UPDATE SKIP LOCKED`, and `run_worker` is a threaded Django management command.
+- **Alternatives:**
+  - Celery + Redis (or RabbitMQ).
+  - A ready-made Postgres queue library (procrastinate, django-q2, pgqueuer).
+- **Why Postgres:**
+  1. **The machine.** It's Windows 11 Home with about 7.5 GB RAM, no Docker and no WSL. Redis has no
+     supported native Windows build, and Celery dropped official Windows support. Postgres is already
+     installed and running.
+  2. **Fewer moving parts.** It's one datastore to run, back up and deploy (Phase 4 hosting gets cheaper),
+     and there's no broker/database consistency to reason about.
+  3. **Transactional enqueue.** `enqueue()` is an INSERT in the caller's transaction. The incident, its
+     AlertDelivery rows and their deliver_alert jobs commit together or not at all, and the same holds for
+     a monitor claim and its run_check job. With Celery you need `transaction.on_commit` and still accept
+     a gap: if the commit succeeds and the publish fails, the job is lost. Here that gap doesn't exist,
+     and it is tested (`test_enqueue_in_rolled_back_transaction_leaves_no_job`,
+     `test_claim_and_enqueue_are_atomic`, `test_incident_and_its_alerts_roll_back_together`).
+  4. **The queue is part of the engineering story.** Leases, SKIP LOCKED, reaping, backoff and idempotent
+     handlers are what this project is meant to demonstrate. A library would hide them.
+- **What would make me switch to Celery/Redis (or a hosted queue):**
+  - Sustained throughput where queue polling becomes a measurable share of Postgres load. Phase 3 measures
+    jobs/second.
+  - Needing fan-out, priorities or rate-limited queues across many job types.
+  - Many worker hosts, where hundreds of pollers cost more than a push-based broker.
+  - A team already operating Redis. Switching would keep the handler and service code: handlers are thin
+    and idempotent already.
+
+## D2. Local DB role created through the existing pgpass superuser entry
+
+- **Choice:** role `statusping` (LOGIN, CREATEDB) and database `statusping`, created by connecting as
+  `postgres` via `%APPDATA%\postgresql\pgpass.conf` (same as FixFlow D1). A random password was written
+  only to the gitignored `.env`. The `fixflow` database was not touched.
+- **Reason:** no superuser password had to be typed or shown. CREATEDB lets pytest create
+  `test_statusping`.
+
+## D3. App layout: checks and incidents live in `monitors`, alerts in `alerts`
+
+- **Choice:**
+  - `monitors` holds Monitor, CheckResult, Incident and the check/incident services.
+  - `alerts` holds AlertChannel and AlertDelivery.
+  - `jobs` holds the queue and the worker.
+- **Alternatives:** separate `checks` and `incidents` apps.
+- **Reason:** counters, results and incidents change together, under one monitor row lock, in one
+  transaction (`run_check` → `apply_result`). Splitting them would only add cross-app imports. Alerts are
+  a separate concern with their own secrets and delivery rules.
+
+## D4. DNS rebinding is closed by pinning the connection to the validated IP
+
+- **Choice:** `safe_http.send()` resolves the host, rejects it if **any** address is non-public, then
+  connects to one validated address:
+  - The URL host is replaced by the IP.
+  - The `Host` header is set to the original host (with its port, if not the default).
+  - For https, `extensions={"sni_hostname": host}` makes httpcore send SNI and verify the certificate
+    against the original hostname, using the default verifying SSL context.
+- **Also:**
+  - Redirects are never followed (`follow_redirects=False`). A monitor whose site redirects records the
+    3xx; set `expected_status` to it if that is normal.
+  - Proxy environment variables are ignored (`trust_env=False`), because a proxy would make the real
+    connection target something we did not validate.
+- **Reason:** with resolve-then-connect, a DNS answer can change between validation and the socket
+  connect. Pinning removes that window and also makes URL-parser differences irrelevant, since the socket
+  goes to the IP we checked. Tests assert the pinned IP, Host and SNI (`tests/test_ssrf.py`).
+- **Limitations:**
+  - Only one address is tried. IPv4 is preferred, falling back to the first IPv6; there is no
+    happy-eyeballs fallback to another address.
+  - httpx timeouts are per phase (connect, write, each read), not a total deadline. A target that drips
+    response headers slowly can stretch a check beyond `timeout_seconds`. The 60 s job lease and the
+    reaper bound the impact. A hard total deadline would need the request on a separate thread and is
+    left for Phase 3 if measurements show it matters.
+
+## D5. The loopback switch for the e2e run exists only in DEBUG
+
+- **Choice:** `SSRF_ALLOW_LOOPBACK` allows `127.0.0.0/8` and `::1` only (never private, link-local or
+  metadata addresses). It is honoured only when `settings.DEBUG` is also True. `prod.py` and `test.py`
+  hard-code it to False, and `prod.py` forces `DEBUG=False`.
+- **Webhooks:** in that mode alert channels may also use `http://127.0.0.1…`, so the e2e fake receiver
+  works.
+- **Tested:** `test_loopback_targets_cannot_be_enabled_in_prod` sets the env var to True and imports prod
+  settings; `test_loopback_switch_needs_debug` covers the DEBUG check.
+
+## D6. Job status meanings: `failed` vs `dead`
+
+- **Choice:**
+  - `failed`: the handler raised `PermanentError`, meaning a retry cannot help (for example a webhook
+    returning 404).
+  - `dead`: the job used up `max_attempts`, through errors or expired leases.
+  - Both are kept for inspection, and neither is retried.
+- **Reason:** the spec lists both. Giving them distinct meanings lets an operator tell "misconfigured" from
+  "flaky / down".
+
+## D7. Claim, finish and lease details
+
+- **Claim:** ORM `select_for_update(skip_locked=True)` plus `bulk_update`, in one transaction, then
+  commit. The handler runs outside that transaction, so a slow handler never holds the claim lock.
+- **Finish:** `complete()` and `fail()` filter on `status='running' AND locked_by=<this worker>`. A worker
+  whose lease expired gets 0 rows updated, logs "lease lost" and changes nothing.
+  `locked_by = <host>:<pid>:<random>/<thread>`, unique per thread.
+- **Lease and reaper:** the lease is 60 s (`JOB_LEASE_SECONDS`). The reaper requeues expired leases, or
+  marks them dead on the final attempt. A lost attempt still counts towards `max_attempts`, so a job that
+  crashes the worker cannot loop forever.
+- **Clock:** lease and run_after times come from the worker's clock (`timezone.now()`). That is fine for
+  one host or NTP-synced hosts. With badly skewed hosts, DB `now()` would be safer; revisit if deployed on
+  several machines.
+
+## D8. Dedupe keys and check retries
+
+- **run_check:**
+  - `dedupe_key="run_check:<monitor_id>"`. If workers fall behind, a monitor gets at most one pending
+    check instead of a pile-up (`test_dispatch_does_not_pile_up_jobs_for_a_slow_monitor`).
+  - `max_attempts=1`: a failed or crashed check is not retried, because the next scheduled check comes
+    within `interval_seconds` and a retry would distort the consecutive-failure count.
+- **deliver_alert:** `dedupe_key="deliver_alert:<delivery_id>"` and `max_attempts=5`.
+- **Dedupe mechanics:**
+  - On conflict, `enqueue()` catches the IntegrityError inside a savepoint, so the caller's transaction
+    survives, and returns the existing pending job.
+  - The key is `NULL` (not `""`) when unused, so unkeyed jobs never collide.
+
+## D9. Claim index chosen by EXPLAIN (rolled-back experiment)
+
+- **Setup:** 200,000 succeeded jobs and 2,000 queued jobs (1,000 due), inserted and ANALYZEd inside a
+  transaction that was rolled back. Script:
+  `scripts/explain_claim.py` (prints all four plans).
+- **Results** for the claim query:
+
+  | Index set | Plan | Execution |
+  |---|---|---|
+  | (status, run_after) + partial (run_after) WHERE queued | Index Scan on partial, Incremental Sort | 0.184 ms |
+  | only (status, run_after) | Index Scan, Index Cond on status and run_after | 0.157 ms |
+  | only the partial index | Index Scan on partial | 0.150 ms |
+  | no job index | Bitmap scan via the dedupe partial unique index, then a full Sort | 1.583 ms |
+
+- **Choice:** keep only `(status, run_after)`. The partial index gave no measurable gain, and the composite
+  index also serves the reaper (`status='running'`). Dropped in migration `jobs/0002`.
+- **Note:** even with no job index, the dedupe constraint's partial index (pending rows only) keeps the
+  claim fast. It would degrade if pending rows grew large.
+
+## D10. The scheduler is a thread in every worker, serialised by an advisory lock
+
+- **Choice:** each `run_worker` has a control thread that writes the heartbeat every 5 s and runs a
+  scheduler tick every 10 s: dispatch, reap, purge, and prune old heartbeats.
+- **Lock:** a tick runs only if `pg_try_advisory_lock(key)` succeeds; it unlocks afterwards. A worker that
+  loses the race just skips that tick.
+- **Safety without the lock:** two overlapping ticks are still correct. Dispatch uses SKIP LOCKED, and
+  reap and purge are single UPDATE/DELETE statements. The lock only avoids wasted work. This is per tick,
+  not leader election, so no failover logic is needed.
+- **Flag:** `--no-scheduler` runs a job-only worker.
+- **Tests:** `test_scheduler_tick_is_skipped_while_another_holds_the_lock` and
+  `test_two_workers_share_the_queue_without_duplicates`.
+
+## D11. Retention of jobs
+
+- **Choice:** each tick deletes succeeded jobs whose `finished_at` is older than
+  `JOB_SUCCEEDED_RETENTION_DAYS` (7), in batches of `JOB_PURGE_BATCH_SIZE` (1,000), at most 10 batches per
+  tick. That is up to 10k rows per 10 s.
+- **Kept:** failed and dead jobs stay. They are rare and are the debugging record.
+- **Why batches:** bounded batches keep each DELETE short, so it never holds many row locks or bloats one
+  transaction.
+
+## D12. run_check is idempotent per job
+
+- **Choice:** `CheckResult.job_id` is unique (a plain bigint, not a FK, because jobs are purged).
+  - A rerun of a job that already recorded its result returns early, before any HTTP request.
+  - A concurrent rerun that slipped past the early check hits the unique constraint, rolls back its whole
+    transaction (counters included) and is dropped.
+- **Tests:** `test_running_the_same_job_twice_records_one_result` and
+  `test_concurrent_duplicate_run_is_dropped_by_the_unique_job_id`.
+
+## D13. Status and incident semantics
+
+- **`last_status`:** the raw outcome of the most recent check (up/down). The flap-protected state is
+  "is there an open incident".
+- **`started_at`:** the time of the first failed check in the streak (when the downtime began), not when
+  the threshold was crossed.
+- **`resolved_at`:** the time of the check that completed the recovery streak.
+- **`cause`:** the error of the check that crossed the threshold.
+- **Pausing:** a paused monitor keeps any open incident, and resuming checks it immediately. A result that
+  arrives after a pause or delete is dropped entirely: no CheckResult, no counter change.
+
+## D14. Alert delivery holds the row lock during the POST
+
+- **Choice:** `deliver_alert` runs `SELECT … FOR UPDATE` on the AlertDelivery row, POSTs (5 s timeout),
+  records the outcome and commits. A second concurrent run blocks on the lock, then sees `sent` and does
+  nothing (`test_concurrent_runs_of_one_delivery_send_one_webhook`).
+- **Cost:** one DB connection and transaction held for up to the webhook timeout per in-flight delivery.
+  That is fine at a few threads.
+- **Remaining window:** if the POST succeeds but the commit fails (crash or DB loss between the two), the
+  retry sends again. Exactly-once delivery to a third-party webhook is impossible without the receiver's
+  cooperation. Discord and Slack webhooks have no idempotency keys.
+- **Test alerts** (`send_test_alert`) have no delivery row: running that job twice sends two test pings.
+  That is deliberate, the only exception to "handlers are idempotent", and harmless.
+
+## D15. Alert retry rules
+
+- **Retryable** (via the queue's backoff): network errors, timeouts, DNS failure, 5xx, and 429.
+  - A 429's `Retry-After` (seconds or HTTP date) sets `run_after`, capped at `JOB_RETRY_MAX_SECONDS`
+    (15 min), so one bad header cannot park an alert for a day.
+- **Not retryable:** other 4xx, and a webhook host that now resolves to a private address. The delivery is
+  marked `failed` and the job `failed`.
+- **Out of attempts:** after the 5th attempt the delivery is `failed` and the job `dead`.
+- **Attempt record:** each attempt's outcome is saved on the row (`attempts`, `last_error`).
+- **Injection safety:**
+  - Discord messages send `allowed_mentions: {"parse": []}`, so a monitor named `@everyone` pings nobody.
+  - Slack text escapes `& < >`, so `<!channel>` is inert.
+
+## D16. Webhook URLs are secrets
+
+- **API:** the URL is write-only; responses show `webhook_url_masked = "https://<host>/****"`.
+- **Admin:** shows only the masked form and cannot edit or add channels.
+- **Errors:** strings are built from status codes and exception class names, never `str(exc)` from httpx,
+  which can include the URL.
+- **Logging:** the `httpx` and `httpcore` loggers are pinned to WARNING, because httpx logs every request
+  URL at INFO.
+- **Tests:** `test_webhook_url_never_appears_in_logs_or_errors` captures all logs at DEBUG through a
+  failing and then succeeding delivery and asserts the token appears nowhere. API responses are checked in
+  `test_webhook_url_is_masked_in_every_response`.
+
+## D17. Organizations and memberships
+
+- **Slug:** taken from the request or `slugify(name)`. On a collision the API returns 400 and asks for
+  another slug rather than appending `-2` silently. The slug is immutable because it will be the public
+  status page URL.
+- **Invites:** an invite needs an existing account (spec: "invite existing users by email"). An unknown
+  email returns 400.
+  - **Trade-off:** an org admin can learn whether an email has an account. Registration already reveals
+    that ("already exists"), so nothing new leaks.
+- **Who may do what:**
+  - Only owners can grant, change or remove the owner role; an admin gets 403.
+  - Admins manage admins and viewers.
+- **Last owner:** the check locks the org row so concurrent demotions serialise. Demoting or removing the
+  last owner returns 409 `last_owner`.
+- **Order of checks:** 401 (anonymous), then 404 (not a member of this org, or an object outside it), then
+  403 (role). This is the same principle as FixFlow D4 and D11.
+
+## D18. Monitor limit returns 409 under an org row lock
+
+- **Choice:** the 21st monitor returns 409 `monitor_limit_reached` with `details.limit`. The count and
+  insert run with the org row locked, so two concurrent creates cannot both pass.
+- **Reason:** the request is well formed and allowed. Only the org's current state blocks it (FixFlow D5).
+
+## D19. Smaller API choices
+
+- **Check results** use cursor pagination (newest first, no `COUNT(*)`, no deep OFFSET), because the table
+  is high volume by design. Other lists use page-number pagination like FixFlow.
+- **Boolean filters** (`ok`, `is_paused`) accept only `true` or `false`; anything else is 400. This is
+  FixFlow D12: django-filter's BooleanFilter silently ignores typos.
+- **Health:** returns 200 `{"status": "degraded"}` when the newest worker heartbeat is older than 30 s or
+  missing, and 503 only when the DB is down. A platform health check on the web process must not restart
+  it for a worker problem.
+- **Throttles:** login 10/min and refresh 10/min per IP; register 5/hour per IP; writes 60/min per user
+  (unsafe methods only). All use the DB-backed shared cache, and `NUM_PROXIES=0` ignores
+  `X-Forwarded-For` (FixFlow D24).
+- **PUT** is disabled everywhere; PATCH is the only update verb.
+
+## D20. Running locally on Windows
+
+- **Worker:** uses threads, not processes (no fork on Windows). Threads are daemon threads, so a job
+  stuck past the shutdown timeout cannot keep the process alive; its lease expires and the reaper
+  requeues it.
+- **Shutdown signals:** SIGINT (Ctrl+C), SIGTERM, and SIGBREAK (Ctrl+Break, which is what
+  `os.kill(pid, CTRL_BREAK_EVENT)` delivers on Windows). The subprocess test uses that real signal.
+- **Web server:** gunicorn does not run on Windows, so the local web process is `runserver`. gunicorn stays
+  in requirements for Linux hosting (Phase 4).
+
+## D21. seed_demo creates monitors without the create-time DNS lookup
+
+- **Choice:** the targets are fixed, safe public URLs (example.com, httpbin.org). The command must work
+  offline, and every check re-validates before connecting, so safety is unchanged.
+
+## D22. Test strategy for the network
+
+- **No real network in tests:** two autouse fixtures (`fake_dns` and respx with `assert_all_mocked=True`)
+  make it impossible for a test to reach real DNS or HTTP. Tests declare host → IP mappings and mock the
+  pinned-IP URL.
+- **TLS-error test:** respx replaces a side effect's `__cause__`, which destroys the
+  `httpx ← httpcore ← ssl.SSLError` chain, and in fact produced a cyclic chain. That cycle exposed a real
+  infinite loop in `_is_tls_error`, which is now fixed. The TLS test therefore patches `safe_http.send` to
+  raise an exception chain built the way httpx builds it.
+- **Concurrency tests** use real threads against a transactional test DB, each with its own connection
+  (`tests/concurrency.py`).
+
+## D23. What the mutation checks prove, precisely
+
+`scripts/mutation_check.py` applies each mutation, runs the relevant test files, and restores the code with
+`git checkout`. All seven mutations were caught:
+
+| Mutation | Test that fails |
+|---|---|
+| M1: no SKIP LOCKED on job claim | `test_claim_skips_rows_locked_by_another_transaction_without_waiting` |
+| M1b: no lock at all on job claim | that test, plus `test_concurrent_claimers_never_get_the_same_job` |
+| M2: no SKIP LOCKED on dispatch | `test_dispatch_skips_a_locked_monitor_without_waiting` |
+| M2b: no lock at all on dispatch | that test, plus `test_concurrent_dispatchers_never_claim_the_same_monitor` |
+| M3: no `locked_by` guard on finish | `test_stale_worker_cannot_finish_a_reclaimed_job` |
+| M4a: no delivery row lock | `test_concurrent_runs_of_one_delivery_send_one_webhook` |
+| M4b: no delivery uniqueness constraint | `test_database_refuses_a_duplicate_delivery` |
+
+**Why M1 and M2 need their own tests:** removing only SKIP LOCKED does **not** produce double claims. Plain
+`FOR UPDATE` makes the second claimer wait, then re-check the row, which by then is running or no longer
+due. So the "never twice" tests still pass under M1 and M2. What SKIP LOCKED buys is that claimers never
+wait for each other, and the no-waiting tests check exactly that. M1b and M2b remove the lock entirely, to
+show that the double-claim tests do fail without it.

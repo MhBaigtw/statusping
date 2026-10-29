@@ -137,7 +137,10 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        "plain": {"format": "%(asctime)s %(levelname)s %(name)s [%(threadName)s] %(message)s"},
+        "plain": {
+            "()": "apps.core.logging.UTCFormatter",
+            "format": "%(asctime)s %(levelname)s %(name)s [%(threadName)s] %(message)s",
+        },
     },
     "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain"}},
     "root": {"handlers": ["console"], "level": "WARNING"},
