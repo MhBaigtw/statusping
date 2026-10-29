@@ -1,0 +1,24 @@
+[project]
+name = "statusping"
+version = "0.2.0"
+requires-python = ">=3.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["**/migrations/*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "DJ", "SIM", "C4"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+testpaths = ["tests"]
+addopts = "--cov=apps --cov=config --cov-report=term-missing:skip-covered --cov-fail-under=85"
+filterwarnings = [
+    "ignore::DeprecationWarning:drf_spectacular.*",
+    "ignore:The default scheme will be changed:django.utils.deprecation.RemovedInDjango60Warning",
+]
+
+[tool.coverage.run]
+omit = ["*/migrations/*", "config/wsgi.py", "config/settings/dev.py"]
