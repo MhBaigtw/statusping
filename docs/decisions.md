@@ -135,6 +135,8 @@ Each entry gives the choice, the alternatives considered, and the reason.
   | only the partial index | Index Scan on partial | 0.150 ms |
   | no job index | Bitmap scan via the dedupe partial unique index, then a full Sort | 1.583 ms |
 
+- **Repeat run:** after migration 0002, the script was re-run. Every index variant took 0.11–0.20 ms, and
+  no index took 1.62 ms. The differences between index variants are noise at this scale.
 - **Choice:** keep only `(status, run_after)`. The partial index gave no measurable gain, and the composite
   index also serves the reaper (`status='running'`). Dropped in migration `jobs/0002`.
 - **Note:** even with no job index, the dedupe constraint's partial index (pending rows only) keeps the
