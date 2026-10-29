@@ -26,6 +26,16 @@ MUTATIONS = [
         ["tests/test_checks.py"],
     ),
     (
+        "M1b remove the row lock from the job claim entirely",
+        [("apps/jobs/queue.py", "Job.objects.select_for_update(skip_locked=True)", "Job.objects")],
+        ["tests/test_queue.py"],
+    ),
+    (
+        "M2b remove the row lock from the monitor dispatch entirely",
+        [("apps/monitors/services.py", "Monitor.objects.select_for_update(skip_locked=True)", "Monitor.objects")],
+        ["tests/test_checks.py"],
+    ),
+    (
         "M3 remove the locked_by guard on finish",
         [("apps/jobs/queue.py", "status=S.RUNNING, locked_by=worker_id)", "status=S.RUNNING)")],
         ["tests/test_queue.py"],
