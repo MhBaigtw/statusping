@@ -257,6 +257,11 @@ def main():
             )
             say(f"checks recorded: {len(checks())}, fake target hits: {target.hits}")
             procs.sample_memory(force=True)
+            # The fake servers die with this script: don't leave a monitor and channel behind
+            # that would keep checking a dead port on the next worker run.
+            assert client.delete(f"{org}/monitors/{monitor_id}/").status_code == 204
+            assert client.delete(f"{org}/alert-channels/{channel.json()['id']}/").status_code == 204
+            say("cleaned up: monitor and alert channel deleted")
         finally:
             procs.stop()
     say("peak working set: " + ", ".join(f"{k} {v:.0f} MB" for k, v in procs.peak.items()))
