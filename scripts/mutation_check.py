@@ -1,3 +1,4 @@
+# ruff: noqa: E501  (the mutation table reads better unwrapped)
 """Mutation check: remove each key concurrency/idempotency guarantee and confirm tests fail.
 
 Each mutation edits source files, runs the relevant tests, and restores the files with
