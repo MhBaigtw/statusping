@@ -8,6 +8,7 @@ from apps.organizations.models import Membership, Organization
 PASSWORD = "test-pass-123"
 PUBLIC_IP = "93.184.216.34"
 DISCORD_IP = "162.159.135.232"
+SLACK_IP = "54.0.0.10"
 
 
 class UserFactory(factory.django.DjangoModelFactory):

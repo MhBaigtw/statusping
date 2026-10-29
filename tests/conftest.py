@@ -10,6 +10,7 @@ from apps.core import safe_http
 from .factories import (
     DISCORD_IP,
     PUBLIC_IP,
+    SLACK_IP,
     MembershipFactory,
     OrganizationFactory,
     UserFactory,
@@ -32,7 +33,11 @@ def fake_dns(monkeypatch):
 
     A host that isn't in the dict fails to resolve, the same as NXDOMAIN.
     """
-    records = {"example.com": [PUBLIC_IP], "discord.com": [DISCORD_IP]}
+    records = {
+        "example.com": [PUBLIC_IP],
+        "discord.com": [DISCORD_IP],
+        "hooks.slack.com": [SLACK_IP],
+    }
 
     def fake_getaddrinfo(host, port):
         if host not in records:

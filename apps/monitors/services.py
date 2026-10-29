@@ -107,9 +107,12 @@ def dispatch_due_checks(*, batch_size=None):
 
 
 def _is_tls_error(exc):
-    while exc is not None:
+    """True if an ssl.SSLError is anywhere in the exception chain (httpx wraps it twice)."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:  # chains can contain cycles
         if isinstance(exc, ssl.SSLError):
             return True
+        seen.add(id(exc))
         exc = exc.__cause__ or exc.__context__
     return False
 
