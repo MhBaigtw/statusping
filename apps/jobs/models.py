@@ -30,9 +30,10 @@ class Job(models.Model):
     class Meta:
         ordering = ["id"]
         indexes = [
+            # Serves the claim (status='queued' AND run_after <= now ORDER BY run_after) and
+            # the reaper (status='running'). A partial index on queued jobs was measured and
+            # gave no gain over this one, so it was dropped (docs/decisions.md D9).
             models.Index(fields=["status", "run_after"], name="job_status_run_after_idx"),
-            # The claim query only ever looks at queued jobs. Measured in docs/decisions.md.
-            models.Index(fields=["run_after"], condition=Q(status="queued"), name="job_queued_idx"),
         ]
         constraints = [
             # At most one pending (queued or running) job per dedupe key.

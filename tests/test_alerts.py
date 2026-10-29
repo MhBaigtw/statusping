@@ -215,6 +215,31 @@ def test_running_the_delivery_job_twice_sends_one_webhook(delivery, http):
     assert delivery.attempts == 1
 
 
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_runs_of_one_delivery_send_one_webhook(team, http):
+    """Two workers run the same delivery at once (e.g. after a lease expiry). The row lock
+    makes the second wait for the first, then see status=sent and do nothing."""
+    import time
+
+    from .concurrency import run_in_threads
+
+    monitor = MonitorFactory(organization=team["org"])
+    incident = Incident.objects.create(monitor=monitor, started_at=timezone.now(), cause="dns")
+    AlertChannelFactory(organization=team["org"], webhook_url=SECRET)
+    services.queue_alerts(incident, "opened")
+    delivery = AlertDelivery.objects.get()
+
+    def slow_webhook(request):
+        time.sleep(0.5)
+        return httpx.Response(204)
+
+    route = http.post(HOOK).mock(side_effect=slow_webhook)
+    run_in_threads(lambda i: services.deliver_alert(delivery.pk, final_attempt=False), 2)
+    assert route.call_count == 1
+    delivery.refresh_from_db()
+    assert (delivery.status, delivery.attempts) == ("sent", 1)
+
+
 def test_database_refuses_a_duplicate_delivery(delivery):
     from django.db import IntegrityError
 
