@@ -5,8 +5,83 @@ checks, and workers run them with strict timeouts. An incident opens after N con
 resolves after M consecutive successes, so flapping sites don't page anyone. Alerts go to Discord or Slack
 webhooks, with retries and no duplicates.
 
-**Status: Phase 2 of 4 complete** (API, job queue, checks, incidents, alerts). Phase 3 (status page,
-caching, benchmarks) and Phase 4 (deployment) are planned in [SPEC.md](SPEC.md).
+**Status: all four phases complete** ([SPEC.md](SPEC.md)): the API, the job queue, checks, incidents,
+alerts, a public status page with caching, measured benchmarks, and a live deployment.
+
+## Live demo
+
+The service runs on Render's free tier, so **the first request after 15 idle minutes takes about a minute**
+while it wakes up. Monitoring only runs while it is awake (see [Known limits](#known-limits-of-the-free-deployment)).
+
+| | |
+|---|---|
+| API docs (Swagger) | https://statusping-3xwa.onrender.com/api/docs/ |
+| Public status page (HTML) | https://statusping-3xwa.onrender.com/status/demo |
+| Status page (JSON) | https://statusping-3xwa.onrender.com/status/demo/ |
+| Health (web + worker heartbeat) | https://statusping-3xwa.onrender.com/api/health/ |
+
+**Demo logins** (a demo-only password, deliberately public): `owner@statusping.example` (owner) and
+`viewer@statusping.example` (read-only), password `DEMO_PASSWORD_PLACEHOLDER`. Get a token with
+`POST /api/auth/token/`, then use **Authorize** in the docs. The demo org has three monitors, one of
+which (`httpbin.org/status/500`) is always down, so there is always an open incident to look at.
+
+## How it fits together
+
+```mermaid
+flowchart LR
+    client([API clients / browsers]) -->|HTTPS| web
+    subgraph render[Render free web service: one gunicorn process]
+        web[Django + DRF<br/>API, docs, status page]
+        sched[scheduler thread<br/>dispatch due checks, reap leases, retention]
+        workers[job threads<br/>run_check, deliver_alert]
+    end
+    subgraph pg[(PostgreSQL: Supabase, session pooler)]
+        data[orgs, monitors, checks,<br/>incidents, alert deliveries]
+        queue[jobs table:<br/>the queue]
+        cache[DB cache:<br/>throttles, status page]
+    end
+    web --> data
+    web --> cache
+    sched -->|"enqueue (same transaction)"| queue
+    workers -->|"claim: FOR UPDATE SKIP LOCKED"| queue
+    workers --> data
+    workers -->|"safe_http: SSRF-checked, IP-pinned, one time budget"| targets([monitored URLs])
+    workers -->|webhook POST, retried| hooks([Discord / Slack])
+```
+
+In development the same code runs as two processes: `runserver` and `run_worker`. With the paid upgrade
+it runs as a web service plus a separate background worker. The queue's guarantees don't depend on how
+many processes run it.
+
+## Why the queue is PostgreSQL, not Celery + Redis
+
+The full reasoning is in [docs/decisions.md](docs/decisions.md) D1. In short:
+
+- **Transactional enqueue.** A job is a row, so an incident, its alert rows and their delivery jobs
+  commit together or not at all. With a separate broker, a crash between "commit" and "publish" loses or
+  duplicates work.
+- **One less system to run.** Postgres is already required. Redis would add a service, a failure mode and
+  a bill.
+- **The scale fits.** One worker process runs about 3,300 checks a minute (measured below), and Postgres
+  wasn't the bottleneck at 2 processes.
+- **The mechanics are the interesting part:** SKIP LOCKED claims, leases, a reaper, backoff, dedupe keys
+  and idempotent handlers. All of them are tested against a real Postgres with real threads.
+
+## Measured results
+
+All on one laptop (Ryzen 5 5500U, Windows 11, local Postgres 16), with the exact commands in
+[docs/benchmarks.md](docs/benchmarks.md). These are not production numbers.
+
+| What | Result | Evidence |
+|---|---|---|
+| Public status page, 20 monitors, 345k checks in 30 days | uncached p50 **172 ms** (244 ms before dropping a redundant index); cache hit p50 **~10 ms** | [C2](docs/benchmarks.md#c2-public-status-page-uncached-vs-cached) |
+| One worker process, 4 threads | **~55 checks/s (~3,300/min)**; 8 threads add nothing; 2 processes give **1.8×** | [C3](docs/benchmarks.md#finding-the-limit) |
+| Dispatcher | found a cap of 600 checks/min; fixed to 6,000/min | [C3 dispatcher](docs/benchmarks.md#dispatcher) |
+| Alerts at 30% / 60% injected failures (400 deliveries per run, 2 runs each) | **99.75–100% / 91.75–92.25%** delivered, matching the 1 − p⁵ model; **0 duplicates** | [C4](docs/benchmarks.md#results) |
+| Tests | **461 tests, 97.8% coverage** in CI (Postgres 16); 8 mutation checks all caught | [CI](https://github.com/MhBaigtw/statusping/actions), [D23](docs/decisions.md#d23-what-the-mutation-checks-prove-precisely) |
+
+**Live verification** on the deployed service: `scripts/verify_live.py`, with output in
+[HANDOFF.md](HANDOFF.md).
 
 ## What's interesting here
 
@@ -83,8 +158,8 @@ CREATE DATABASE statusping OWNER statusping;
 - **Health:** `/api/health/` reports the database and the age of the newest worker heartbeat.
 - **Multiple workers:** you can run several `run_worker` processes. They share the queue safely, and only
   one scheduler tick runs at a time (Postgres advisory lock).
-- **Linux hosting:** in production (Phase 4) the web process would be gunicorn, which does not run on
-  Windows.
+- **Production** runs gunicorn (Linux only) with `gunicorn.conf.py`. See [docs/deploy.md](docs/deploy.md)
+  for the hosting options and `render.yaml` for the live setup.
 
 ## Environment variables
 
@@ -114,7 +189,8 @@ See [.env.example](.env.example) for the full list with defaults.
 | `orgs/{slug}/incidents/` (`status=open\|resolved`) · `monitors/{id}/incidents/` | members |
 | `orgs/{slug}/alert-channels/` CRUD (webhook URL masked) + `{id}/test/` | owner/admin write |
 | `orgs/{slug}/incidents/{id}/deliveries/` | members |
-| `health/`, `schema/`, `docs/` | public |
+| `health/` (503 if the worker is dead), `health/live/`, `schema/`, `docs/` | public |
+| `/status/{slug}/` (JSON) · `/status/{slug}` (HTML): uptime 24h/7d/30d, recent incidents, no URLs | public, cached 30 s, throttled per IP |
 
 - **Scoping:** a non-member gets **404** for anything in an org, a viewer gets **403** for writes, and an
   anonymous caller gets **401**.
@@ -123,12 +199,13 @@ See [.env.example](.env.example) for the full list with defaults.
 ## Tests and checks
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest                 # 380+ tests, coverage gate 85%
+.\.venv\Scripts\python.exe -m pytest                 # 460+ tests, coverage gate 85%
 .\.venv\Scripts\python.exe -m ruff check . ; .\.venv\Scripts\python.exe -m ruff format --check .
 .\.venv\Scripts\python.exe manage.py makemigrations --check --dry-run
 .\.venv\Scripts\python.exe manage.py spectacular --validate --fail-on-warn --file NUL
 .\.venv\Scripts\python.exe scripts\mutation_check.py # removes each guarantee, confirms a test fails
 .\.venv\Scripts\python.exe scripts\e2e.py            # live ~5-minute run, logs in e2e-logs/
+.\.venv\Scripts\python.exe scripts\verify_live.py https://<host>   # against a deployment (~10 min)
 ```
 
 - **No real network:** tests never reach real DNS or HTTP. An autouse fake resolver and respx block it.
@@ -163,5 +240,8 @@ Supabase Free database ([docs/deploy.md](docs/deploy.md), option (c), D31). That
 - [SPEC.md](SPEC.md): the full four-phase specification
 - [TASKS.md](TASKS.md): the progress checklist
 - [docs/decisions.md](docs/decisions.md): every design decision, with alternatives and reasons
+- [docs/benchmarks.md](docs/benchmarks.md): every measurement, with commands
+- [docs/deploy.md](docs/deploy.md): hosting options, prices checked, and the chosen setup
+- [docs/resume-bullets.md](docs/resume-bullets.md): a summary with every number linked to its evidence
 - [HANDOFF.md](HANDOFF.md): the latest checkpoint report, with verification output
 - [CLAUDE.md](CLAUDE.md): working rules for AI-assisted sessions
