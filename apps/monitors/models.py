@@ -87,7 +87,12 @@ class CheckResult(models.Model):
         UNEXPECTED_STATUS = "unexpected_status", "Unexpected status code"
         BLOCKED_TARGET = "blocked_target", "Blocked target (SSRF protection)"
 
-    monitor = models.ForeignKey(Monitor, on_delete=models.CASCADE, related_name="checks")
+    # No separate FK index: check_monitor_time_idx (monitor, -checked_at) serves every
+    # lookup by monitor. Measured in docs/benchmarks.md (C2): the redundant index cost a
+    # write per check and made the planner pick a slower plan for the uptime aggregate.
+    monitor = models.ForeignKey(
+        Monitor, on_delete=models.CASCADE, related_name="checks", db_index=False
+    )
     checked_at = models.DateTimeField()
     ok = models.BooleanField()
     status_code = models.PositiveSmallIntegerField(null=True, blank=True)

@@ -232,3 +232,14 @@ def test_run_worker_command_end_to_end_and_stops_on_signal():
     assert AlertDelivery.objects.get().status == "sent"
     assert Incident.objects.get().monitor_id == monitor.pk
     assert not WorkerHeartbeat.objects.exists()
+
+
+def test_scheduler_tick_dispatches_full_batches_until_none_are_due(settings):
+    settings.DISPATCH_BATCH_SIZE = 3
+    settings.DISPATCH_MAX_BATCHES = 3
+    for _ in range(11):
+        MonitorFactory()
+    assert scheduler_tick()["dispatched"] == 9  # 3 full batches, then the per-tick bound
+    assert scheduler_tick()["dispatched"] == 2  # the rest; a short batch ends the loop
+    assert scheduler_tick()["dispatched"] == 0
+    assert Job.objects.filter(kind="run_check").count() == 11

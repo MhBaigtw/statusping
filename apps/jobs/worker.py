@@ -46,7 +46,16 @@ def scheduler_tick():
         if not cursor.fetchone()[0]:
             return None
     try:
-        dispatched = dispatch_due_checks()
+        dispatched = []
+        # Keep dispatching while batches come back full, so the dispatch rate is not capped
+        # at DISPATCH_BATCH_SIZE per tick (100 per 10 s = 600 checks/min, measured in
+        # docs/benchmarks.md as far below one worker's capacity). Each batch is its own
+        # short transaction; DISPATCH_MAX_BATCHES bounds how long one tick can take.
+        for _ in range(settings.DISPATCH_MAX_BATCHES):
+            batch = dispatch_due_checks()
+            dispatched += batch
+            if len(batch) < settings.DISPATCH_BATCH_SIZE:
+                break
         requeued, dead = queue.reap_expired()
         purged = queue.purge_succeeded()
         WorkerHeartbeat.objects.filter(last_seen__lt=timezone.now() - HEARTBEAT_RETENTION).delete()

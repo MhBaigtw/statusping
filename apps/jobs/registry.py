@@ -9,6 +9,7 @@ HANDLERS = {
     "run_check": "apps.monitors.handlers.run_check",
     "deliver_alert": "apps.alerts.handlers.deliver_alert",
     "send_test_alert": "apps.alerts.handlers.send_test_alert",
+    "noop": "apps.jobs.handlers.noop",  # queue benchmark only
 }
 
 

@@ -163,6 +163,8 @@ CHECK_USER_AGENT = env(
     "CHECK_USER_AGENT", default="StatusPing/0.2 (+https://github.com/MhBaigtw/statusping)"
 )
 DISPATCH_BATCH_SIZE = env.int("DISPATCH_BATCH_SIZE", default=100)
+# Up to this many batches per scheduler tick (10 x 100 per 10 s = 6,000 dispatches/min).
+DISPATCH_MAX_BATCHES = env.int("DISPATCH_MAX_BATCHES", default=10)
 
 # Public status page: payload cache TTL in seconds (0 disables the cache).
 STATUS_PAGE_CACHE_SECONDS = env.int("STATUS_PAGE_CACHE_SECONDS", default=30)
