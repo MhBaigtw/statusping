@@ -14,6 +14,7 @@ from apps.core import safe_http
 from apps.core.exceptions import Conflict
 from apps.jobs.queue import enqueue
 from apps.organizations.models import Organization
+from apps.statuspage.services import invalidate as invalidate_status_page
 
 from .models import CheckResult, Incident, Monitor
 
@@ -47,19 +48,29 @@ def create_monitor(*, organization, **fields):
                 code="monitor_limit_reached",
                 details={"limit": limit},
             )
-        return Monitor.objects.create(organization=organization, **fields)
+        monitor = Monitor.objects.create(organization=organization, **fields)
+        invalidate_status_page(organization)
+        return monitor
 
 
 def update_monitor(monitor, **fields):
     for name, value in fields.items():
         setattr(monitor, name, value)
     monitor.save()
+    invalidate_status_page(monitor.organization)  # the name is shown publicly
     return monitor
+
+
+def delete_monitor(monitor):
+    organization = monitor.organization
+    monitor.delete()
+    invalidate_status_page(organization)
 
 
 def pause_monitor(monitor):
     monitor.is_paused = True
     monitor.save(update_fields=["is_paused", "updated_at"])
+    invalidate_status_page(monitor.organization)
     return monitor
 
 
@@ -68,6 +79,7 @@ def resume_monitor(monitor):
         monitor.is_paused = False
         monitor.next_check_at = timezone.now()
         monitor.save(update_fields=["is_paused", "next_check_at", "updated_at"])
+        invalidate_status_page(monitor.organization)
     return monitor
 
 
@@ -198,6 +210,7 @@ def apply_result(monitor, result):
         )
         logger.info("monitor %s: incident %s opened (%s)", monitor.pk, incident.pk, result.error)
         queue_alerts(incident, AlertDelivery.Event.OPENED)
+        invalidate_status_page(monitor.organization)
     elif (
         result.ok
         and open_incident is not None
@@ -207,6 +220,7 @@ def apply_result(monitor, result):
         open_incident.save(update_fields=["resolved_at"])
         logger.info("monitor %s: incident %s resolved", monitor.pk, open_incident.pk)
         queue_alerts(open_incident, AlertDelivery.Event.RESOLVED)
+        invalidate_status_page(monitor.organization)
 
 
 def _streak_start(monitor):

@@ -13,7 +13,7 @@ from .serializers import (
     MemberSerializer,
     MyOrganizationSerializer,
     OrganizationCreateSerializer,
-    OrganizationRenameSerializer,
+    OrganizationUpdateSerializer,
     RoleSerializer,
 )
 
@@ -49,11 +49,11 @@ class OrganizationDetailView(OrgScopedMixin, generics.GenericAPIView):
     def get(self, request, org_slug):
         return Response(MyOrganizationSerializer(self.membership).data)
 
-    @extend_schema(request=OrganizationRenameSerializer, responses=MyOrganizationSerializer)
+    @extend_schema(request=OrganizationUpdateSerializer, responses=MyOrganizationSerializer)
     def patch(self, request, org_slug):
-        serializer = OrganizationRenameSerializer(data=request.data)
+        serializer = OrganizationUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        services.rename_organization(organization=self.organization, **serializer.validated_data)
+        services.update_organization(organization=self.organization, **serializer.validated_data)
         return Response(MyOrganizationSerializer(self.membership).data)
 
 

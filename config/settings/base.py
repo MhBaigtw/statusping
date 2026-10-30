@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     "apps.monitors",
     "apps.jobs",
     "apps.alerts",
+    "apps.statuspage",
 ]
 
 MIDDLEWARE = [
@@ -96,6 +97,7 @@ REST_FRAMEWORK = {
         "token_refresh": env("THROTTLE_REFRESH_RATE", default="10/min"),
         "register": env("THROTTLE_REGISTER_RATE", default="5/hour"),
         "writes": env("THROTTLE_WRITE_RATE", default="60/min"),
+        "status_page": env("THROTTLE_STATUS_PAGE_RATE", default="120/min"),
     },
     # How many proxies sit in front of the app; 0 = use REMOTE_ADDR, ignore X-Forwarded-For.
     "NUM_PROXIES": env.int("NUM_PROXIES", default=0),
@@ -161,6 +163,9 @@ CHECK_USER_AGENT = env(
     "CHECK_USER_AGENT", default="StatusPing/0.2 (+https://github.com/MhBaigtw/statusping)"
 )
 DISPATCH_BATCH_SIZE = env.int("DISPATCH_BATCH_SIZE", default=100)
+
+# Public status page: payload cache TTL in seconds (0 disables the cache).
+STATUS_PAGE_CACHE_SECONDS = env.int("STATUS_PAGE_CACHE_SECONDS", default=30)
 
 # Worker, scheduler and job queue
 WORKER_THREADS = env.int("WORKER_THREADS", default=4)

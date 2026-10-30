@@ -31,6 +31,9 @@ class MonitorViewSet(OrgScopedMixin, viewsets.ModelViewSet):
     def perform_update(self, serializer):
         services.update_monitor(serializer.instance, **serializer.validated_data)
 
+    def perform_destroy(self, instance):
+        services.delete_monitor(instance)
+
     @extend_schema(request=None, responses=MonitorSerializer)
     @action(detail=True, methods=["post"])
     def pause(self, request, org_slug, pk):

@@ -6,6 +6,8 @@ class Organization(models.Model):
     name = models.CharField(max_length=100)
     # Immutable once created: it becomes the public status page URL in Phase 3.
     slug = models.SlugField(max_length=50, unique=True)
+    # Owners can hide the public status page (/status/{slug}/ then returns 404).
+    status_page_public = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

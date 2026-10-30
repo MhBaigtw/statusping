@@ -27,9 +27,14 @@ def create_organization(*, user, name, slug=None):
     return org
 
 
-def rename_organization(*, organization, name):
-    organization.name = name
-    organization.save(update_fields=["name"])
+def update_organization(*, organization, **fields):
+    """Owner-only: name and/or status_page_public (the slug never changes)."""
+    from apps.statuspage.services import invalidate
+
+    for name, value in fields.items():
+        setattr(organization, name, value)
+    organization.save(update_fields=list(fields))
+    invalidate(organization)
     return organization
 
 

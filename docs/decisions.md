@@ -360,3 +360,57 @@ show that the double-claim tests do fail without it.
   - The check also errors if the default monitor timeout exceeds the ceiling, and warns when
     `WORKER_SHUTDOWN_TIMEOUT_SECONDS` is shorter than the longest job, because a graceful shutdown would
     then abandon in-flight jobs to the reaper.
+
+## D25. Public status page
+
+- **Endpoints:**
+  - `GET /status/{slug}/` returns JSON.
+  - `GET /status/{slug}` (no trailing slash, as the spec asks) returns server-rendered HTML.
+  - Both are DRF views over **one** service function (`apps/statuspage/services.get_status_payload`),
+    so they can never disagree.
+  - Neither needs auth. Both return 404 for an unknown slug, and also when the owner sets
+    `status_page_public=false`, so a private page is indistinguishable from a missing one.
+  - Only owners can toggle the setting (`PATCH /api/orgs/{slug}/`). Admins get 403.
+- **Privacy:** monitor names only, never URLs, which can be internal or carry tokens. No member data.
+  Tests assert that neither the URL nor an "@" appears in either format.
+- **Uptime:** `100 × ok / total` over CheckResults with `checked_at >= now - window`, rounded to 2
+  decimals. A window with no checks is **null ("no data"), not 100%**.
+  - All three windows plus `last_checked_at` for every monitor come from **one** aggregate query with
+    conditional `COUNT … FILTER` and `MAX`, so no rows are loaded into Python.
+  - Paused time produces no checks, so pausing neither helps nor hurts uptime.
+- **Public status** is flap-protected: `down` only while an incident is open. One failed check still
+  shows `up` (Monitor.last_status stays the raw last result, D13).
+  - Overall state: `down` when every unpaused monitor is down, `degraded` when some are, and
+    `operational` otherwise, including when nothing is active.
+- **Queries:** a cache miss costs 4 queries:
+  1. org lookup;
+  2. monitors;
+  3. the last 5 incidents per monitor (a sliced Prefetch, which Django runs as a window function);
+  4. the uptime aggregate.
+
+  A hit costs 0 with the in-memory cache, or 1 SELECT on the cache table with the production DB cache.
+  The count is pinned in tests.
+- **Cache:** the payload is cached per slug for `STATUS_PAGE_CACHE_SECONDS` (30; 0 disables it) in the
+  existing DB cache, which is shared by all web processes.
+  - **Invalidation:** on incident open/resolve, monitor create/update/delete/pause/resume, and org
+    rename or `status_page_public` change.
+  - Invalidation runs in `transaction.on_commit`, so a concurrent reader can't re-cache data from before
+    the change.
+  - **Accepted staleness:** plain checks (uptime, last checked) don't invalidate, so they can be up to
+    30 s stale. Invalidating per check would churn the cache at the check rate.
+  - **Remaining race:** a reader that started building before the commit can still store slightly
+    stale data, for at most one TTL.
+  - **Failure handling:** cache failures are best-effort. A failing `get`, `set` or `delete` logs a
+    warning and the page is served uncached. Invalidation can never fail a check, an incident or an API
+    write.
+    - This was found by the worker-process test, where a missing cache table made a committed run_check
+      job fail in its `on_commit` callback.
+    - **Limit:** DRF's throttles use the same DB cache, so if the cache table is missing, throttled
+      endpoints fail. `createcachetable` is therefore a deploy step, as in FixFlow.
+  - Whether the cache helps at all is measured in docs/benchmarks.md (Part C).
+- **Throttle:** scope `status_page`, 120/min per client IP by default (`THROTTLE_STATUS_PAGE_RATE`).
+  The HTML and JSON views share the bucket. The client IP comes from DRF with `NUM_PROXIES` (FixFlow
+  D27: verify the depth live).
+- **HTML:** a Django template with no JS, `<meta http-equiv="refresh" content="60">`, and a viewport meta
+  for mobile. It uses landmarks and headings and a table with `scope` headers, and every status has a
+  text label as well as a colour. Dark mode follows `prefers-color-scheme`.

@@ -8,11 +8,14 @@ class MyOrganizationSerializer(serializers.ModelSerializer):
 
     slug = serializers.SlugField(source="organization.slug", read_only=True)
     name = serializers.CharField(source="organization.name", read_only=True)
+    status_page_public = serializers.BooleanField(
+        source="organization.status_page_public", read_only=True
+    )
     created_at = serializers.DateTimeField(source="organization.created_at", read_only=True)
 
     class Meta:
         model = Membership
-        fields = ["slug", "name", "role", "created_at"]
+        fields = ["slug", "name", "role", "status_page_public", "created_at"]
         read_only_fields = fields
 
 
@@ -24,8 +27,16 @@ class OrganizationCreateSerializer(serializers.Serializer):
         return value.lower()
 
 
-class OrganizationRenameSerializer(serializers.Serializer):
-    name = serializers.CharField(max_length=100)
+class OrganizationUpdateSerializer(serializers.Serializer):
+    """Owner-only. The slug is immutable (it is the public status page URL)."""
+
+    name = serializers.CharField(max_length=100, required=False)
+    status_page_public = serializers.BooleanField(required=False)
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError("Provide name and/or status_page_public.")
+        return attrs
 
 
 class MemberSerializer(serializers.ModelSerializer):

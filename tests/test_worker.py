@@ -9,7 +9,9 @@ import time
 from pathlib import Path
 
 import pytest
+from django.core.management import call_command
 from django.db import connection
+from django.test import override_settings
 from django.utils import timezone
 
 from apps.alerts.models import AlertDelivery
@@ -24,6 +26,12 @@ from .fake_servers import FakeTarget, FakeWebhook
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
+DB_CACHE = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "django_cache",
+    }
+}
 BASE_DIR = Path(__file__).resolve().parent.parent
 STARTED = threading.Event()
 
@@ -175,6 +183,10 @@ def _database_url():
 
 def test_run_worker_command_end_to_end_and_stops_on_signal():
     """`manage.py run_worker` in its own process against the test DB and local fake servers."""
+    # The child process uses the real DatabaseCache (dev settings); tests use LocMem, so the
+    # test database has no cache table until we create it, as a deploy does.
+    with override_settings(CACHES=DB_CACHE):
+        call_command("createcachetable")
     with FakeTarget(status=500) as target, FakeWebhook() as webhook:
         monitor = MonitorFactory(url=target.url("/health"), failure_threshold=1)
         AlertChannelFactory(organization=monitor.organization, webhook_url=webhook.url("/hook"))
@@ -199,7 +211,12 @@ def test_run_worker_command_end_to_end_and_stops_on_signal():
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if windows else 0,
         )
         try:
-            wait_for(lambda: len(webhook.received) == 1, timeout=60, message="webhook")
+            try:
+                wait_for(lambda: len(webhook.received) == 1, timeout=60, message="webhook")
+            except AssertionError:
+                proc.kill()
+                output = proc.communicate()[0]
+                raise AssertionError(f"no webhook; worker output:\n{output}") from None
             assert WorkerHeartbeat.objects.count() == 1
             if windows:
                 os.kill(proc.pid, signal.CTRL_BREAK_EVENT)  # SIGBREAK in the child

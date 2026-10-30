@@ -136,6 +136,7 @@ def test_default_rates_and_shared_cache():
         "token_refresh": "10/min",
         "register": "5/hour",
         "writes": "60/min",
+        "status_page": "120/min",
     }
     assert base.CACHES["default"]["BACKEND"] == "django.core.cache.backends.db.DatabaseCache"
 

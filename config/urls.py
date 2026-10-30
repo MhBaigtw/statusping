@@ -23,6 +23,7 @@ from apps.organizations.views import (
     OrganizationDetailView,
     OrganizationListCreateView,
 )
+from apps.statuspage.views import StatusPageHTMLView, StatusPageView
 
 ORG = "orgs/<slug:org_slug>/"
 
@@ -66,6 +67,9 @@ api_patterns = [
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include(api_patterns)),
+    # Public status page: JSON with the trailing slash, HTML without (same payload).
+    path("status/<slug:org_slug>/", StatusPageView.as_view(), name="status-page"),
+    path("status/<slug:org_slug>", StatusPageHTMLView.as_view(), name="status-page-html"),
 ]
 
 handler404 = "apps.core.views.not_found"
