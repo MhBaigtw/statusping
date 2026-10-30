@@ -69,6 +69,14 @@ def test_json_shape_and_no_private_data(anon, page, team):
     assert "Not ours" not in text  # another org's monitor
 
 
+def test_json_carries_the_uptime_numbers(anon, page):
+    # Regression (found live): the serializer renamed its "_24h" fields after binding, so
+    # they kept reading the "_24h" key and the JSON showed null for every window.
+    results(page["api"], (hours(1), True), (hours(2), False), (days(3), True), (days(20), True))
+    [monitor] = anon.get("/status/acme/").json()["monitors"]
+    assert monitor["uptime"] == {"24h": 50.0, "7d": 66.67, "30d": 75.0}
+
+
 def test_html_page_renders_the_same_data_accessibly(anon, page):
     results(page["api"], (hours(1), True), (hours(2), False))
     resp = anon.get("/status/acme")

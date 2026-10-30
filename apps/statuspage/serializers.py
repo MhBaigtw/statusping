@@ -8,15 +8,13 @@ UPTIME_HELP = (
 
 
 class UptimeSerializer(serializers.Serializer):
-    _24h = serializers.FloatField(allow_null=True, help_text=UPTIME_HELP)
-    _7d = serializers.FloatField(allow_null=True, help_text=UPTIME_HELP)
-    _30d = serializers.FloatField(allow_null=True, help_text=UPTIME_HELP)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # "24h" etc. are not valid Python identifiers; expose the fields under those names.
-        for name in ("24h", "7d", "30d"):
-            self.fields[name] = self.fields.pop(f"_{name}")
+    def get_fields(self):
+        # "24h" etc. are not valid Python identifiers, so the fields are built here rather
+        # than declared. (Renaming declared fields after binding keeps their old source.)
+        return {
+            name: serializers.FloatField(allow_null=True, help_text=UPTIME_HELP)
+            for name in ("24h", "7d", "30d")
+        }
 
 
 class PublicIncidentSerializer(serializers.Serializer):
