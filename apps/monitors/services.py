@@ -231,3 +231,37 @@ def _streak_start(monitor):
         .values_list("checked_at", flat=True)[monitor.consecutive_failures - 1]
     )
     return first_failure
+
+
+# Retention
+
+
+def purge_check_results(now=None, *, batch_size=None, max_rows=None):
+    """Delete CheckResults older than CHECK_RESULT_RETENTION_DAYS. Returns (deleted, complete).
+
+    Works monitor by monitor so every query is a short range scan on the existing
+    (monitor, -checked_at) index; a global `checked_at < cutoff` would need another index
+    on a table that grows with every check (measured in docs/benchmarks.md, D1). Deletes
+    in batches of `batch_size` and stops after `max_rows`, so one run can't hold the
+    scheduler lock for long; `complete` is False when it stopped early (run again soon).
+    """
+    now = now or timezone.now()
+    batch_size = batch_size or settings.CHECK_RESULT_PURGE_BATCH_SIZE
+    max_rows = max_rows or settings.CHECK_RESULT_PURGE_MAX_ROWS
+    cutoff = now - timedelta(days=settings.CHECK_RESULT_RETENTION_DAYS)
+    deleted = 0
+    for monitor_id in Monitor.objects.order_by("pk").values_list("pk", flat=True):
+        while True:
+            ids = list(
+                CheckResult.objects.filter(monitor_id=monitor_id, checked_at__lt=cutoff)
+                .order_by("checked_at")
+                .values_list("pk", flat=True)[:batch_size]
+            )
+            if not ids:
+                break
+            deleted += CheckResult.objects.filter(pk__in=ids).delete()[0]
+            if deleted >= max_rows:
+                return deleted, False
+            if len(ids) < batch_size:
+                break
+    return deleted, True

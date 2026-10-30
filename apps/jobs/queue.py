@@ -18,12 +18,15 @@ Delivery is at-least-once, so every handler must be safe to run twice.
 
 import logging
 import random
+import time
 from datetime import timedelta
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import F, Q
 from django.utils import timezone
+
+from apps.core.logging import mask_secrets
 
 from .exceptions import PermanentError, RetryLater
 from .models import Job
@@ -128,20 +131,51 @@ def fail(job, worker_id, error, *, retry_at=None, permanent=False):
 
 
 def run_job(job, worker_id):
-    """Run one claimed job's handler and record the outcome. Returns the new status."""
+    """Run one claimed job's handler and record the outcome. Returns the new status.
+
+    Logs exactly ONE structured line per job (plus a traceback for unexpected errors):
+        job id=42 kind=deliver_alert attempt=2/5 outcome=queued duration_ms=12 error="HTTP 503"
+    outcome is the job's new status (succeeded/queued/failed/dead) or lease_lost. Error
+    text is masked (mask_secrets) before it is logged or stored.
+    """
+    started = time.perf_counter()
+    error = ""
     try:
         handler = get_handler(job.kind)
         handler(job)
     except RetryLater as exc:
-        logger.info("job %s %s: retry later (%s)", job.pk, job.kind, exc)
-        return fail(job, worker_id, str(exc), retry_at=exc.retry_at)
+        error = mask_secrets(str(exc))
+        status = fail(job, worker_id, error, retry_at=exc.retry_at)
     except PermanentError as exc:
-        logger.warning("job %s %s: permanent failure (%s)", job.pk, job.kind, exc)
-        return fail(job, worker_id, str(exc), permanent=True)
+        error = mask_secrets(str(exc))
+        status = fail(job, worker_id, error, permanent=True)
     except Exception as exc:
-        logger.exception("job %s %s: attempt %s raised", job.pk, job.kind, job.attempts)
-        return fail(job, worker_id, f"{type(exc).__name__}: {exc}")
-    return S.SUCCEEDED if complete(job, worker_id) else None
+        error = mask_secrets(f"{type(exc).__name__}: {exc}")
+        logger.warning("job id=%s kind=%s raised", job.pk, job.kind, exc_info=True)
+        status = fail(job, worker_id, error)
+    else:
+        status = S.SUCCEEDED if complete(job, worker_id) else None
+    duration_ms = round((time.perf_counter() - started) * 1000)
+    level = logging.INFO if status in (S.SUCCEEDED, S.QUEUED) else logging.WARNING
+    logger.log(
+        level,
+        "job id=%s kind=%s attempt=%s/%s outcome=%s duration_ms=%s%s",
+        job.pk,
+        job.kind,
+        job.attempts,
+        job.max_attempts,
+        status or "lease_lost",
+        duration_ms,
+        f' error="{error}"' if error else "",
+        extra={
+            "job_id": job.pk,
+            "job_kind": job.kind,
+            "attempt": job.attempts,
+            "outcome": status or "lease_lost",
+            "duration_ms": duration_ms,
+        },
+    )
+    return status
 
 
 def reap_expired(now=None):

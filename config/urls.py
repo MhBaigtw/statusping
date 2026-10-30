@@ -10,7 +10,7 @@ from apps.accounts.views import (
     ThrottledTokenRefreshView,
 )
 from apps.alerts.views import AlertChannelViewSet, IncidentDeliveryListView
-from apps.core.views import HealthView
+from apps.core.views import HealthView, LivenessView
 from apps.monitors.views import (
     CheckResultListView,
     IncidentViewSet,
@@ -40,6 +40,7 @@ api_patterns = [
     path("auth/register/", RegisterView.as_view(), name="register"),
     path("me/", MeView.as_view(), name="me"),
     path("health/", HealthView.as_view(), name="health"),
+    path("health/live/", LivenessView.as_view(), name="health-live"),
     path("schema/", SpectacularAPIView.as_view(), name="schema"),
     path("docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
     path("orgs/", OrganizationListCreateView.as_view(), name="org-list"),

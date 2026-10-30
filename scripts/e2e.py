@@ -152,10 +152,11 @@ def main():
 
             def healthy():
                 try:
-                    body = client.get("/health/").json()
+                    response = client.get("/health/")
                 except httpx.HTTPError:
                     return None
-                return body if body["worker"]["status"] == "ok" else None
+                # 503 until the worker's first heartbeat (D27); 200 means web + worker are up.
+                return response.json() if response.status_code == 200 else None
 
             health = wait_until(healthy, 60, "web + worker heartbeat", procs, every=1)
             say(f"health: {health}")

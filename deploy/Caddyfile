@@ -1,0 +1,7 @@
+# Option (b): TLS + reverse proxy. /etc/caddy/Caddyfile
+# Caddy obtains a Let's Encrypt certificate automatically for a DNS name pointing at the
+# VM (a free sslip.io name such as 203-0-113-7.sslip.io works without buying a domain).
+status.example.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:8000
+}

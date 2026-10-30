@@ -160,7 +160,13 @@ def test_scheduler_tick_is_skipped_while_another_holds_the_lock():
         assert scheduler_tick() is None
         assert not Job.objects.exists()
     summary = scheduler_tick()
-    assert summary == {"dispatched": 1, "requeued": 0, "dead": 0, "purged": 0}
+    assert summary == {
+        "dispatched": 1,
+        "requeued": 0,
+        "dead": 0,
+        "purged": 0,
+        "purged_checks": 0,
+    }
 
 
 def test_heartbeat_upserts_one_row():

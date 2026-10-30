@@ -144,7 +144,14 @@ LOGGING = {
             "format": "%(asctime)s %(levelname)s %(name)s [%(threadName)s] %(message)s",
         },
     },
-    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain"}},
+    "filters": {"mask_secrets": {"()": "apps.core.logging.SecretMaskingFilter"}},
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "plain",
+            "filters": ["mask_secrets"],
+        }
+    },
     "root": {"handlers": ["console"], "level": "WARNING"},
     "loggers": {
         "apps": {"level": "INFO"},
@@ -166,6 +173,14 @@ DISPATCH_BATCH_SIZE = env.int("DISPATCH_BATCH_SIZE", default=100)
 # Up to this many batches per scheduler tick (10 x 100 per 10 s = 6,000 dispatches/min).
 DISPATCH_MAX_BATCHES = env.int("DISPATCH_MAX_BATCHES", default=10)
 
+# Check results: raw rows are kept this long (must cover the 30-day uptime window; a
+# system check enforces it), then deleted monitor by monitor, at most once per interval
+# unless the previous run stopped at its row bound.
+CHECK_RESULT_RETENTION_DAYS = env.int("CHECK_RESULT_RETENTION_DAYS", default=30)
+CHECK_RESULT_PURGE_INTERVAL_SECONDS = env.int("CHECK_RESULT_PURGE_INTERVAL_SECONDS", default=3600)
+CHECK_RESULT_PURGE_BATCH_SIZE = env.int("CHECK_RESULT_PURGE_BATCH_SIZE", default=1000)
+CHECK_RESULT_PURGE_MAX_ROWS = env.int("CHECK_RESULT_PURGE_MAX_ROWS", default=20000)
+
 # Public status page: payload cache TTL in seconds (0 disables the cache).
 STATUS_PAGE_CACHE_SECONDS = env.int("STATUS_PAGE_CACHE_SECONDS", default=30)
 
@@ -174,7 +189,8 @@ WORKER_THREADS = env.int("WORKER_THREADS", default=4)
 WORKER_POLL_SECONDS = env.float("WORKER_POLL_SECONDS", default=1.0)
 WORKER_SHUTDOWN_TIMEOUT_SECONDS = env.float("WORKER_SHUTDOWN_TIMEOUT_SECONDS", default=30.0)
 WORKER_HEARTBEAT_SECONDS = env.float("WORKER_HEARTBEAT_SECONDS", default=5.0)
-WORKER_HEARTBEAT_STALE_SECONDS = env.int("WORKER_HEARTBEAT_STALE_SECONDS", default=30)
+# /api/health/ answers 503 when the newest heartbeat is older than this (12 missed beats).
+WORKER_HEARTBEAT_STALE_SECONDS = env.int("WORKER_HEARTBEAT_STALE_SECONDS", default=60)
 SCHEDULER_INTERVAL_SECONDS = env.float("SCHEDULER_INTERVAL_SECONDS", default=10.0)
 JOB_LEASE_SECONDS = env.int("JOB_LEASE_SECONDS", default=60)
 JOB_DEFAULT_MAX_ATTEMPTS = env.int("JOB_DEFAULT_MAX_ATTEMPTS", default=3)

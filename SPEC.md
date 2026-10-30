@@ -168,21 +168,50 @@ but never imports from it.
 
 ---
 
-## Phase 3: measure and harden (NOT BUILT YET)
+## Phase 3: measure and harden (built in Checkpoint 2)
 
-- **Public status page:** `GET /status/{org_slug}/` returns JSON plus a minimal HTML page, with current state
-  and 24h/7d/30d uptime per monitor.
-- **Caching:** DB cache, or per-process with a short TTL, invalidated on incident change. Measure whether it
-  helps.
-- **Status page benchmark:** cached vs uncached p50/p95.
-- **Throughput benchmark:** jobs/second and checks/minute that one worker process sustains against a local
-  fake target, with the method and hardware documented.
-- **Failure-injection test:** a fake webhook that fails X% of the time, reporting delivery success and zero
-  duplicates.
-- **CheckResult retention:** delete or roll up results older than 30 days, in batches.
-- **Query-count tests.**
+### Architect review fixes (Part A)
 
-## Phase 4: ship (NOT BUILT YET)
+- **Time budget:** every outbound request has ONE total time budget covering DNS, connect, TLS, request
+  and response head. It is enforced at the socket level, and when exceeded the result is
+  `error="timeout"`.
+- **Startup check:** refuses to run when `JOB_LEASE_SECONDS < 3 × max(MONITOR_MAX_TIMEOUT_SECONDS=10,
+  ALERT_TIMEOUT_SECONDS)`, so a live job can never be reaped (decisions D24).
+
+### Public status page (Part B)
+
+- **Endpoints:** `GET /status/{slug}/` returns JSON; `GET /status/{slug}` returns server-rendered HTML
+  (no JS, auto-refreshes every 60 s, accessible). Both use one service function.
+- **Content:**
+  - the organization name;
+  - the overall state (operational / degraded / down);
+  - per monitor: name (never the URL), public status (up / down / unknown / paused), last checked,
+    24h / 7d / 30d uptime, and the last 5 incidents (start, end, duration).
+- **Uptime** = successful checks ÷ all checks in the window, computed in one SQL aggregate. A window with
+  no checks is null, not 100%.
+- **Opt-out:** `Organization.status_page_public` (owner-only); when false the page is 404.
+- **Cache:** 30 s in the DB cache, invalidated on commit for incident, monitor and org changes. Cache
+  failures degrade to uncached.
+- **Throttle:** per IP (`status_page`, 120/min, NUM_PROXIES-aware).
+
+### Measurements (Part C)
+
+Results are in docs/benchmarks.md:
+- `seed_bulk` (DEBUG or `--force`): 20 orgs × 20 monitors × 30 days, 6.18M check results;
+- the status page uncached vs cached, with EXPLAIN-based index decisions;
+- worker throughput and job latency at 1/4/8 threads, plus raw queue throughput and the dispatcher's
+  rate;
+- alert delivery under 30% and 60% injected failures, counting duplicates at the receiver.
+
+### Retention and hardening (Part D)
+
+- **CheckResult retention:** 30 days, purged monitor by monitor, at most hourly and bounded per run.
+- **Health:** `/api/health/` returns 503 when the newest worker heartbeat is older than 60 s; the web
+  process's own health check uses `/api/health/live/`.
+- **Logging:** one structured line per job (id, kind, attempt, outcome, duration_ms), with webhook URLs
+  masked at the source and by a handler filter.
+
+## Phase 4: ship (in progress: deploy prep done, waiting for Humayun's hosting choice)
 
 - The architect and Humayun choose hosting for a web process, an always-on worker process and Postgres.
 - Deploy, then verify live.

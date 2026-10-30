@@ -50,6 +50,15 @@ def check_timing_settings(app_configs, **kwargs):
                 id="statusping.E002",
             )
         )
+    if settings.CHECK_RESULT_RETENTION_DAYS < 30:
+        problems.append(
+            Error(
+                f"CHECK_RESULT_RETENTION_DAYS={settings.CHECK_RESULT_RETENTION_DAYS} is shorter "
+                "than the status page's 30-day uptime window, which would silently under-count.",
+                hint="Keep at least 30 days of raw check results.",
+                id="statusping.E003",
+            )
+        )
     if budget > settings.WORKER_SHUTDOWN_TIMEOUT_SECONDS:
         problems.append(
             Warning(

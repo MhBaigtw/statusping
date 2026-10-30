@@ -34,7 +34,7 @@ def test_prod_forces_secure_settings(monkeypatch, fresh):
     assert prod.SESSION_COOKIE_SECURE and prod.CSRF_COOKIE_SECURE
     assert prod.SECURE_HSTS_SECONDS >= 31536000
     assert prod.SECURE_SSL_REDIRECT is True
-    assert prod.SECURE_REDIRECT_EXEMPT == [r"^api/health/$"]
+    assert prod.SECURE_REDIRECT_EXEMPT == [r"^api/health/$", r"^api/health/live/$"]
     db = prod.DATABASES["default"]
     assert db["OPTIONS"]["sslmode"] == "require"
     assert db["CONN_HEALTH_CHECKS"] is True

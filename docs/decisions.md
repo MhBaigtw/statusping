@@ -249,9 +249,8 @@ Each entry gives the choice, the alternatives considered, and the reason.
   is high volume by design. Other lists use page-number pagination like FixFlow.
 - **Boolean filters** (`ok`, `is_paused`) accept only `true` or `false`; anything else is 400. This is
   FixFlow D12: django-filter's BooleanFilter silently ignores typos.
-- **Health:** returns 200 `{"status": "degraded"}` when the newest worker heartbeat is older than 30 s or
-  missing, and 503 only when the DB is down. A platform health check on the web process must not restart
-  it for a worker problem.
+- **Health:** ~~200 "degraded" for a stale worker~~. Superseded in Checkpoint 2 by D27: `/api/health/`
+  returns 503 for a stale worker, and the web-only check moved to `/api/health/live/`.
 - **Throttles:** login 10/min and refresh 10/min per IP; register 5/hour per IP; writes 60/min per user
   (unsafe methods only). All use the DB-backed shared cache, and `NUM_PROXIES=0` ignores
   `X-Forwarded-For` (FixFlow D24).
@@ -414,3 +413,63 @@ show that the double-claim tests do fail without it.
 - **HTML:** a Django template with no JS, `<meta http-equiv="refresh" content="60">`, and a viewport meta
   for mobile. It uses landmarks and headings and a table with `scope` headers, and every status has a
   text label as well as a colour. Dark mode follows `prefers-color-scheme`.
+
+## D26. CheckResult retention: per monitor, hourly, bounded; no rollups
+
+- **Choice:** raw check results are kept `CHECK_RESULT_RETENTION_DAYS` (30) days.
+  `purge_check_results()` deletes older rows **monitor by monitor**, in batches of 1,000, at most 20,000
+  rows per run. The scheduler runs it at most once per `CHECK_RESULT_PURGE_INTERVAL_SECONDS` (3600). The
+  next-run time is shared through the DB cache.
+  - **Backlog:** a run that hits the row bound reports itself incomplete, and the next tick (10 s later)
+    continues. Deletion capacity during a backlog is about 120k rows/min, far above ingestion (about
+    3.3k/min per worker, benchmarks C3).
+  - **Cache outage:** if the cache is unavailable the purge runs every tick, which is correct, just more
+    queries.
+- **Why per monitor:** evidence from `scripts/explain_retention.py` on 6.18M rows.
+  - A global `checked_at < cutoff` has no supporting index: a parallel seq scan took about 950 ms **even
+    when nothing has expired**, which is the usual case.
+  - A new B-tree on `checked_at` answers in 0.04 ms, but adds an index write to every check insert
+    (42 MB on this data). I had just removed a redundant index for exactly that cost.
+  - BRIN was not chosen by the planner on the seeded data. seed_bulk writes rows monitor by monitor, so
+    the heap isn't in time order. That says nothing about BRIN on real append-ordered data, which
+    remains an option.
+  - Per-monitor range scans on the **existing** composite index cost 188 ms across 406 monitors when
+    nothing has expired (0.46 ms each, mostly round trips). Hourly, that's negligible.
+- **No rollup table:** retention (30 days) covers the longest uptime window (30 days), so the 30-day
+  figure never needs data that was deleted. A system check (`statusping.E003`) refuses a retention below
+  30 days.
+  - Rollups would only be a **speed** optimisation for the uncached status page (benchmarks C2), and the
+    30 s cache already covers that.
+
+## D27. Health: 503 when the worker is dead; a separate liveness path for the web process
+
+- **Choice (review D2):** `/api/health/` returns **503** `worker_unavailable` when the newest heartbeat is
+  older than `WORKER_HEARTBEAT_STALE_SECONDS` (default raised from 30 to 60 s, which is 12 missed 5 s
+  beats) or there is no heartbeat at all. It also returns 503 when the DB is down. The worker is the
+  product, so an external uptime check on this path detects a dead worker.
+- **Added:** `/api/health/live/` (web plus DB only, ignoring the worker) for the **web service's own**
+  platform health check. Without it, a dead worker would make the platform restart a healthy web process
+  or refuse to finish its deploys, which doesn't fix the worker and takes the API down too. Both paths are
+  exempt from the HTTPS redirect.
+- **Test change:** Checkpoint 1's `test_health_without_worker_is_degraded` (200) became
+  `test_health_without_any_worker_is_503`. The requirement changed (D19 is superseded); this is not a
+  weakened test.
+
+## D28. One structured log line per job; secrets masked twice
+
+- **Log line:** `run_job` logs exactly one line per job:
+  `job id=42 kind=deliver_alert attempt=2/5 outcome=queued duration_ms=12 error="HTTP 503"`.
+  - **Level:** INFO for succeeded or queued (a retry is normal); WARNING for failed, dead or lease_lost.
+  - **Structured fields:** the same values ride on the record as `extra` (`job_id`, `job_kind`,
+    `attempt`, `outcome`, `duration_ms`) for a JSON handler later.
+  - **Tracebacks:** unexpected exceptions also log a traceback (WARNING). The worker's separate
+    "attempt N" line was removed.
+- **Masking at the source:** error text is passed through `mask_secrets()` before it is logged **or
+  stored** in `Job.last_error`. Discord and Slack webhook paths become `…/api/webhooks/****` and
+  `…/services/****`; host and scheme stay visible.
+- **Masking at the sink:** the console handler has a `SecretMaskingFilter` that masks every message and
+  traceback, including from library code. It rewrites the shared record, so every other handler sees the
+  masked version too.
+- **Tests:** an exception that quotes the webhook URL ends up masked in the job's `last_error`, the
+  summary line and the formatted traceback (`tests/test_logging.py`). This comes on top of the existing
+  httpx/httpcore WARNING pin (D16).

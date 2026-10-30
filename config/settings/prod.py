@@ -9,6 +9,12 @@ SSRF_ALLOW_LOOPBACK = False
 
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
 CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
+# On Render the platform sets RENDER_EXTERNAL_HOSTNAME; trust it automatically (as FixFlow
+# does), so the service works before a custom domain exists.
+_render_host = env("RENDER_EXTERNAL_HOSTNAME", default="")
+if _render_host:
+    ALLOWED_HOSTS.append(_render_host)
+    CSRF_TRUSTED_ORIGINS.append(f"https://{_render_host}")
 
 # Database: TLS required by default (set DB_SSLMODE=disable only for a local Postgres).
 # Connections are reused for DB_CONN_MAX_AGE seconds; health checks drop connections
@@ -21,7 +27,7 @@ DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 # TLS is terminated by the platform proxy.
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=True)
-SECURE_REDIRECT_EXEMPT = [r"^api/health/$"]
+SECURE_REDIRECT_EXEMPT = [r"^api/health/$", r"^api/health/live/$"]
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 SECURE_HSTS_SECONDS = 60 * 60 * 24 * 365

@@ -19,6 +19,7 @@ from datetime import timedelta
 from secrets import token_hex
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import DatabaseError, connection
 from django.utils import timezone
 
@@ -39,7 +40,7 @@ def scheduler_tick():
     and purge are single UPDATE/DELETE statements, so overlapping ticks stay correct.
     Returns a summary dict, or None if another worker holds the scheduler lock.
     """
-    from apps.monitors.services import dispatch_due_checks
+    from apps.monitors.services import dispatch_due_checks, purge_check_results
 
     with connection.cursor() as cursor:
         cursor.execute("SELECT pg_try_advisory_lock(%s)", [SCHEDULER_LOCK_KEY])
@@ -58,14 +59,51 @@ def scheduler_tick():
                 break
         requeued, dead = queue.reap_expired()
         purged = queue.purge_succeeded()
+        purged_checks = _purge_check_results_when_due(purge_check_results)
         WorkerHeartbeat.objects.filter(last_seen__lt=timezone.now() - HEARTBEAT_RETENTION).delete()
     finally:
         with connection.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_unlock(%s)", [SCHEDULER_LOCK_KEY])
-    summary = {"dispatched": len(dispatched), "requeued": requeued, "dead": dead, "purged": purged}
+    summary = {
+        "dispatched": len(dispatched),
+        "requeued": requeued,
+        "dead": dead,
+        "purged": purged,
+        "purged_checks": purged_checks,
+    }
     if any(summary.values()):
         logger.info("scheduler: %s", summary)
     return summary
+
+
+RETENTION_NEXT_RUN_KEY = "retention:check_results:next_run"
+
+
+def _purge_check_results_when_due(purge):
+    """Run CheckResult retention at most once per CHECK_RESULT_PURGE_INTERVAL_SECONDS.
+
+    The next-run time is shared by all workers through the DB cache. If the run stopped at
+    its row bound (a backlog), the next tick continues, so deletion always keeps up with
+    ingestion. If the cache is unavailable, it runs every tick: correct, just more queries.
+    """
+    now = timezone.now()
+    try:
+        next_run = cache.get(RETENTION_NEXT_RUN_KEY)
+    except Exception:
+        logger.warning("retention: cache unavailable; running anyway", exc_info=True)
+        next_run = None
+    if next_run is not None and next_run > now:
+        return 0
+    deleted, complete = purge()
+    interval = timedelta(seconds=settings.CHECK_RESULT_PURGE_INTERVAL_SECONDS)
+    wait = interval if complete else timedelta()
+    try:
+        cache.set(RETENTION_NEXT_RUN_KEY, now + wait, timeout=None)
+    except Exception:
+        logger.warning("retention: could not store the next run time", exc_info=True)
+    if deleted:
+        logger.info("retention: deleted %s check results (complete=%s)", deleted, complete)
+    return deleted
 
 
 class Worker:
@@ -146,8 +184,7 @@ class Worker:
                 try:
                     jobs = queue.claim(locked_by)
                     for job in jobs:
-                        logger.info("job %s %s: attempt %s", job.pk, job.kind, job.attempts)
-                        queue.run_job(job, locked_by)
+                        queue.run_job(job, locked_by)  # logs one line per job
                 except DatabaseError:
                     logger.exception("%s: database error; reconnecting", locked_by)
                     connection.close()

@@ -32,17 +32,26 @@
 - [x] Humayun approved; created MhBaigtw/statusping and pushed main
 - [x] GitHub Actions green (run 40970739665: 379 passed, 97.53%)
 
-## Phase 3 (not started)
-- [ ] Public status page GET /status/{org_slug}/ (JSON + minimal HTML) with 24h/7d/30d uptime
-- [ ] Caching (DB or per-process, short TTL) invalidated on incident change; measure whether it helps
-- [ ] Status page benchmark (p50/p95 cached vs uncached)
-- [ ] Throughput benchmark (jobs/s, checks/min for one worker process) vs local fake target
-- [ ] Failure-injection test for alert delivery (webhook failing X%): success rate, zero duplicates
-- [ ] CheckResult retention (delete or roll up >30 days, in batches)
-- [ ] Query-count tests
-- [ ] Consider: hard total deadline per check (D4 limitation)
+## Checkpoint 2, Part A: architect review fix
+- [x] A1 total time budget per request (DNS + connect + TLS + read), socket-level deadline
+- [x] A2 system check: lease >= 3x longest job budget (fails fast)
+- [x] A3 real-socket tests: drip, TLS stall, slow DNS, redirect loop, job finishes inside lease
 
-## Phase 4 (not started)
+## Phase 3: measure and harden
+- [x] Public status page GET /status/{org_slug}/ (JSON + minimal HTML) with 24h/7d/30d uptime
+- [x] status_page_public opt-out (owner only)
+- [x] Caching (DB cache, 30 s) invalidated on commit; measured: kept (about 17x at p50)
+- [x] Status page benchmark (p50/p95 cached vs uncached) + EXPLAIN; redundant FK index dropped
+- [x] Throughput benchmark (jobs/s, checks/min, threads 1/4/8, 2 processes) vs local fake target
+- [x] Dispatcher bottleneck found and fixed (600/min cap -> up to 6,000/min)
+- [x] Failure-injection benchmark for alert delivery (30% and 60%, zero duplicates)
+- [x] CheckResult retention (per monitor, hourly, bounded); rollups not needed (D26)
+- [x] Query-count test for the status page
+- [x] Health 503 on stale worker + /api/health/live/
+- [x] Structured per-job log line, webhook URLs masked
+- [ ] Push Parts A-D (ask first) and confirm CI
+
+## Phase 4
 - [ ] Choose hosting (web + always-on worker + Postgres), checking current free/cheap options
 - [ ] Deploy + live verification
 - [ ] README Mermaid diagram (API, Postgres incl. jobs table, worker + scheduler, targets, webhooks)

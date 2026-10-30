@@ -29,11 +29,10 @@ def beat(seconds_ago):
     )
 
 
-def test_health_without_worker_is_degraded(anon):
-    resp = anon.get("/api/health/")
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "status": "degraded",
+def test_health_without_any_worker_is_503(anon):
+    """D2: the worker is the product, so no heartbeat at all is an outage."""
+    error = assert_error(anon.get("/api/health/"), 503, "worker_unavailable")
+    assert error["details"] == {
         "database": "ok",
         "worker": {"status": "missing", "last_seen_seconds_ago": None},
     }
@@ -42,17 +41,34 @@ def test_health_without_worker_is_degraded(anon):
 def test_health_reports_newest_heartbeat(anon):
     beat(120)
     beat(3)
-    body = anon.get("/api/health/").json()
+    resp = anon.get("/api/health/")
+    assert resp.status_code == 200
+    body = resp.json()
     assert body["status"] == "ok"
     assert body["worker"]["status"] == "ok"
     assert 2 <= body["worker"]["last_seen_seconds_ago"] <= 5
 
 
-def test_health_stale_worker(anon):
-    beat(120)
-    body = anon.get("/api/health/").json()
-    assert body["status"] == "degraded"
-    assert body["worker"] == {"status": "stale", "last_seen_seconds_ago": 120}
+def test_health_is_503_once_the_heartbeat_is_older_than_the_threshold(anon, settings):
+    settings.WORKER_HEARTBEAT_STALE_SECONDS = 60
+    beat(59)
+    assert anon.get("/api/health/").status_code == 200
+    WorkerHeartbeat.objects.all().delete()
+    beat(61)
+    error = assert_error(anon.get("/api/health/"), 503, "worker_unavailable")
+    assert error["details"]["worker"] == {"status": "stale", "last_seen_seconds_ago": 61}
+    assert "60 s" in error["message"]
+
+
+def test_default_stale_threshold(settings):
+    assert settings.WORKER_HEARTBEAT_STALE_SECONDS == 60
+
+
+def test_liveness_ignores_the_worker(anon):
+    """For the web process's own platform health check: a dead worker must not fail it."""
+    resp = anon.get("/api/health/live/")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "database": "ok"}
 
 
 def test_health_database_down_is_503(anon, monkeypatch):
@@ -61,6 +77,18 @@ def test_health_database_down_is_503(anon, monkeypatch):
 
     monkeypatch.setattr("apps.core.views.worker_health", broken)
     assert_error(anon.get("/api/health/"), 503, "service_unavailable")
+
+
+def test_liveness_database_down_is_503(anon, monkeypatch):
+    class BrokenCursor:
+        def __enter__(self):
+            raise DatabaseError("down")
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("apps.core.views.connection.cursor", lambda: BrokenCursor())
+    assert_error(anon.get("/api/health/live/"), 503, "service_unavailable")
 
 
 def test_unknown_url_uses_error_shape(anon):

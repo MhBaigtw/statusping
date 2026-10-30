@@ -1,0 +1,17 @@
+# Option (b): web process. /etc/systemd/system/statusping-web.service
+[Unit]
+Description=StatusPing web (gunicorn)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=statusping
+WorkingDirectory=/opt/statusping
+EnvironmentFile=/etc/statusping/statusping.env
+Environment=PORT=8000
+ExecStart=/opt/statusping/.venv/bin/gunicorn config.wsgi:application -c gunicorn.conf.py --bind 127.0.0.1:8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

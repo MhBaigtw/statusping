@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.db import DatabaseError
+from django.db import DatabaseError, connection
 from django.db.models import Max
 from django.http import JsonResponse
 from django.utils import timezone
@@ -24,9 +24,31 @@ def worker_health():
     return {"status": "ok" if fresh else "stale", "last_seen_seconds_ago": age}
 
 
+def database_unavailable():
+    return Response(
+        error_body("service_unavailable", "Database is unavailable.", {"database": "unavailable"}),
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
+WorkerHealthSerializer = inline_serializer(
+    "WorkerHealth",
+    {
+        "status": serializers.ChoiceField(choices=["ok", "stale", "missing"]),
+        "last_seen_seconds_ago": serializers.IntegerField(allow_null=True),
+    },
+)
+
+
 class HealthView(APIView):
-    """200 while the database answers. A stale or missing worker makes it "degraded",
-    not 503: the web process is healthy and must not be restarted for a worker problem."""
+    """The whole service: database AND a live worker. 503 if either is down.
+
+    The worker IS the product (no worker = no monitoring), so a host's health check on
+    this path detects a dead worker: 503 when the newest heartbeat is older than
+    WORKER_HEARTBEAT_STALE_SECONDS, or there is none. Use /api/health/live/ for the WEB
+    process's own health check, so a dead worker doesn't make the platform restart (or
+    refuse to deploy) a healthy web process.
+    """
 
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -38,31 +60,61 @@ class HealthView(APIView):
                 {
                     "status": serializers.CharField(),
                     "database": serializers.CharField(),
-                    "worker": inline_serializer(
-                        "WorkerHealth",
-                        {
-                            "status": serializers.CharField(),
-                            "last_seen_seconds_ago": serializers.IntegerField(allow_null=True),
-                        },
-                    ),
+                    "worker": WorkerHealthSerializer,
                 },
-            )
+            ),
+            503: inline_serializer(
+                "HealthError",
+                {
+                    "error": inline_serializer(
+                        "HealthErrorBody",
+                        {
+                            "code": serializers.CharField(),
+                            "message": serializers.CharField(),
+                            "details": serializers.DictField(),
+                        },
+                    )
+                },
+            ),
         }
     )
     def get(self, request):
         try:
             worker = worker_health()
         except DatabaseError:
+            return database_unavailable()
+        if worker["status"] != "ok":
             return Response(
                 error_body(
-                    "service_unavailable",
-                    "Database is unavailable.",
-                    {"database": "unavailable"},
+                    "worker_unavailable",
+                    f"No worker heartbeat in the last {settings.WORKER_HEARTBEAT_STALE_SECONDS} s.",
+                    {"database": "ok", "worker": worker},
                 ),
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        overall = "ok" if worker["status"] == "ok" else "degraded"
-        return Response({"status": overall, "database": "ok", "worker": worker})
+        return Response({"status": "ok", "database": "ok", "worker": worker})
+
+
+class LivenessView(APIView):
+    """The web process only: 200 while it can reach the database (ignores the worker)."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                "Liveness", {"status": serializers.CharField(), "database": serializers.CharField()}
+            )
+        }
+    )
+    def get(self, request):
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+        except DatabaseError:
+            return database_unavailable()
+        return Response({"status": "ok", "database": "ok"})
 
 
 def not_found(request, exception=None):
