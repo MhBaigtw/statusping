@@ -60,8 +60,10 @@
 - [x] Revised again (2026-10-29 session): option (c), one free Render web service with the embedded
       worker, Supabase Free, WORKER_POLL_SECONDS=3 for egress, $0/month; no keep-alive pinger (sleeps
       when idle; Starter worker is the 24/7 upgrade) (D31)
-- [ ] Humayun: Supabase project, Render Blueprint deploy, secrets (see HANDOFF)
-- [ ] Deploy + live verification (health, docs, status page, scheduled checks, 500 incident + delivery, proxy depth)
-- [ ] README: live links, Mermaid diagram, measured results, hosting limits, demo logins
-- [ ] docs/resume-bullets.md with every number linked to evidence
-- [ ] Final verification, push (ask), CI, HANDOFF Checkpoint 2
+- [x] Humayun: Supabase project, Render Blueprint deploy, secrets -> https://statusping-3xwa.onrender.com
+- [x] Live verification (scripts/verify_live.py): health, docs, status page, scheduled checks, 500 incident
+      + delivery log, proxy depth; found and fixed the status page JSON null-uptime bug (5cedd5a)
+- [x] Sleep/wake behaviour observed live (HANDOFF)
+- [x] README: live links, Mermaid diagram, measured results, hosting limits, demo logins (password on request)
+- [x] docs/resume-bullets.md with every number linked to evidence
+- [x] Final verification, push (approved), CI green, HANDOFF Checkpoint 2
