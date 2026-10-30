@@ -15,11 +15,12 @@ anything.
 **Revised (Humayun, 2026-10-29 session): Supabase Free replaces Neon Launch**, so the total is the
 Starter worker only (~$7/month). See "Supabase Free" below and D30.
 
-**Revised again (Humayun, same session): option (c), $0/month.**
+**Revised again (Humayun, same session): option (c), $0/month, no keep-alive pinger.**
 - One free Render web service runs the API and also the job worker and scheduler as threads
   (`EMBEDDED_WORKER=true`), on Supabase Free through the session pooler. There is no paid worker.
-- An external pinger keeps the instance awake. See option (c) below and D31.
-- **Monitoring pauses whenever the instance sleeps or restarts.**
+- **It sleeps when idle, and monitoring only runs while it is awake.**
+- The upgrade path for 24/7 monitoring is the Starter background worker (about $7/month). See option (c)
+  below and D31.
 
 ## Supabase Free: what was checked
 
@@ -92,7 +93,7 @@ month. The table below prices the variants honestly.
 |---|---|---|---|
 | **Monthly cost** | Worker **$7** (Starter) + web **$0** (free) + DB: Neon Launch **~$19.70**, so **~$27/month**. Neon Free only lasts about 17 days. | **$0** within Always Free limits. A card is needed for sign-up verification. | **$0** |
 | **Setup effort** | Low: Blueprint (`render.yaml`, drafted) plus one DB URL | High: VM, firewall, Postgres, Caddy (TLS), systemd, backups, OS updates | Lowest: one service plus a DB URL |
-| **What breaks** | Free web sleeps after 15 min idle, so the API and status page take about a minute to wake up. **Monitoring continues** (the worker is a separate paid service). | Oracle may **reclaim idle** Always Free VMs. Free A1 capacity is often unavailable in popular regions. You own patching, backups and recovery. | **Monitoring stops whenever the web service sleeps** (15 min without inbound traffic). An external pinger keeps it awake, but see Render's terms in section (c). With Neon Free, an always-awake service brings back the 17-day limit; Supabase Free has no compute-hour cap. Render may restart free services at any time. |
+| **What breaks** | Free web sleeps after 15 min idle, so the API and status page take about a minute to wake up. **Monitoring continues** (the worker is a separate paid service). | Oracle may **reclaim idle** Always Free VMs. Free A1 capacity is often unavailable in popular regions. You own patching, backups and recovery. | **Monitoring stops whenever the web service sleeps** (15 min without inbound traffic). **Chosen**, with no keep-alive pinger: monitoring only runs while it is awake (section (c)). Render may restart free services at any time. |
 | **Dead-worker detection** | External check on `/api/health/` (503 when the heartbeat is > 60 s old). Render's own web health check uses `/api/health/live/`. Render restarts a crashed worker process. | systemd `Restart=always` plus an external check on `/api/health/` | `/api/health/` is 503 once the sleeping process stops beating, but the check itself wakes the service, so it only proves the worker is alive while someone is looking. |
 
 **My recommendation:**
@@ -201,52 +202,40 @@ no worker service.
 - **Database connections:** about 4 (2 job threads, the control thread, and 1 web process), plus the
   build's `migrate` briefly. That is well under the session pooler's client cap.
 
-**Stated plainly: monitoring pauses whenever the instance is not running.**
-- While it is asleep, restarting or being redeployed, no checks run and no alerts are sent.
-- Checks that were due are dispatched once it comes back, not replayed for the gap.
-- Render "might restart a Free web service at any time". A restart costs about a minute of monitoring,
-  and the reaper re-queues any job whose lease expired mid-run.
-
-**Keeping it awake: an external pinger.**
+**Stated plainly: monitoring only runs while the instance is awake.**
 - Render spins a free web service down after **15 minutes without inbound traffic** ("both HTTP requests
-  and WebSocket messages"). The worker's own outbound traffic doesn't count.
-- A request every **10 minutes** to `/api/health/live/` leaves a 5-minute margin.
-- **cron-job.org** is free, allows intervals down to one minute, and times out after 30 s
-  ([FAQ](https://cron-job.org/en/faq/)). It may disable a job that fails more than 25 times in a row, and
-  it can email on failure.
-- Setup:
-  1. Sign up at cron-job.org and choose **Create cronjob**.
-  2. URL: `https://<service>.onrender.com/api/health/live/`.
-  3. Schedule: every 10 minutes.
-  4. Turn on the email notification for failures.
-- **Optional second job:** the same setup on `/api/health/`, which returns 503 when the worker heartbeat is
-  over 60 s old (D27). This is the only alert for "the worker is dead", because StatusPing can't alert on
-  itself.
-- If the instance ever does sleep, the first ping's request wakes it. Spin-up takes about a minute, so that
-  ping times out at 30 s and the next one succeeds.
+  and WebSocket messages"). The worker's own outbound traffic (checks, database) doesn't count.
+- Without visitors, StatusPing therefore monitors for about 15 minutes after the last request, then stops.
+  While it is asleep, restarting or being redeployed, no checks run and no alerts are sent.
+- The next request (an API call, `/api/docs/` or a status page) wakes it in about a minute, and monitoring
+  resumes. Monitors that came due while it slept are dispatched once. The gap is not replayed, so uptime
+  figures only cover time when checks actually ran ("no data" is not counted as up; D25).
+- Render "might restart a Free web service at any time". The reaper re-queues any job whose lease expired
+  mid-run.
+- **No keep-alive pinger, deliberately (D31):**
+  - FixFlow is a free web service in the same Render workspace, and the 750 free instance hours are
+    shared. A StatusPing kept awake around the clock (up to 744 h a month) would exhaust them. Render then
+    "suspends all of your Free web services until the start of the next month", FixFlow included.
+  - Render's [Acceptable Use Policy](https://render.com/acceptable-use) prohibits attempts to "bypass,
+    circumvent, or defeat any access or usage restrictions". A pinger built to defeat spin-down can
+    reasonably be read as that, and enforcement can reach the whole account.
+- **Hours while sleeping:** a free service uses instance hours only "as long as it's running"
+  ([Render free instances](https://render.com/docs/free)). A StatusPing that wakes only for visitors uses
+  a small share of the 750 shared with FixFlow.
+- **Supabase can pause too:** if nobody wakes StatusPing for about a week, the database gets no activity
+  and Supabase Free may pause it. It emails a warning about a week ahead, and the project can be restored
+  from the Supabase dashboard (D30).
+- **Dead-worker check:** `/api/health/` returns 503 when the worker heartbeat is older than 60 s (D27).
+  While the instance is awake, that is how to tell the worker thread has died.
 
-**Free instance hours: they cover one service, barely.**
-- Render grants **750 free instance hours per workspace per calendar month**, and a free web service uses
-  them "as long as it's running" ([Render free instances](https://render.com/docs/free)).
-- One always-on service needs at most 31 × 24 = **744 hours**, which leaves 6 hours.
-- **Any second free web service in the same workspace would run both out before month end.** At that point
-  Render "suspends all of your Free web services until the start of the next month". Keep this the only
-  free web service in the workspace.
-
-**Render's terms: not explicitly prohibited, but it's a risk.**
-- The [free-tier docs](https://render.com/docs/free) don't mention keep-alive pings.
-- The [Acceptable Use Policy](https://render.com/acceptable-use) (modified 2025-08-22) prohibits attempts
-  to "bypass, circumvent, or defeat any access or usage restrictions". It also prohibits using the service
-  to "intentionally misuse the Service to avoid payment". Spin-down is a usage restriction of the free
-  tier, so a pinger built to defeat it can reasonably be read as covered. Render decides "in its sole
-  discretion" and may warn, suspend or terminate the account.
-- A Render staff reply in its community forum reportedly calls keep-alive pinging abuse. I couldn't open
-  the thread to confirm the wording (search summary only).
-- The free-tier docs also say Render "may suspend a Free web service that initiates an uncommonly high
-  volume of traffic over the public internet", and give "Accessing an external database" as an example.
-  Our database traffic is steady but small (see egress below).
-- **The risk of proceeding** is a warning, or suspension of the free service or the account. The fallback
-  is option (a): add the Starter worker (about $7/month) and drop the pinger.
+**Upgrade path for 24/7 monitoring: the Starter background worker (about $7/month).**
+- Add a `type: worker` service on the `starter` plan running `python manage.py run_worker --threads 4`, in
+  the same region, with the same `DATABASE_URL`, `SECRET_KEY` and settings module (the option (a) layout
+  above).
+- Remove `EMBEDDED_WORKER` from the web service. The web service can keep sleeping: monitoring no longer
+  depends on it, because paid workers don't spin down.
+- No code changes. Confirm the price on [render.com/pricing](https://render.com/pricing) first; I could
+  only confirm $7 from third-party sources.
 
 **Supabase egress (measured, D31).**
 - Supabase Free includes **5 GB egress** a month, and traffic through the shared pooler counts.
@@ -254,10 +243,12 @@ no worker service.
   - one empty queue poll returns 419 B;
   - a heartbeat returns 380 B;
   - an idle scheduler tick returns 730 B.
-- With 2 job threads that comes to **2.56 GB/month at the default 1 s poll**, before any checks run.
-- `render.yaml` therefore sets `WORKER_POLL_SECONDS=3`: about **1.1 GB/month idle**. A due job then waits
-  up to 3 s to start, which doesn't matter for checks every 60 s or more.
-- Real checks, API calls and TLS overhead come on top, so watch the usage page after the first day.
+- With 2 job threads awake all month, that would be **2.56 GB/month at the default 1 s poll**, before any
+  checks run.
+- `render.yaml` sets `WORKER_POLL_SECONDS=3`: about **1.1 GB/month even if it were awake all month**. A due
+  job then waits up to 3 s to start, which doesn't matter for checks every 60 s or more.
+- While the instance sleeps there is no traffic at all, so real usage is lower. Checks, API calls and TLS
+  overhead come on top; the setting also leaves headroom if the Starter worker is added later.
 
 ---
 

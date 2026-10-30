@@ -58,8 +58,9 @@
       no real Discord webhook (verify via the delivery log); demo logins public
 - [x] Revised (2026-10-29 session): Supabase Free (session pooler) replaces Neon Launch, ~$7/month (D30)
 - [x] Revised again (2026-10-29 session): option (c), one free Render web service with the embedded
-      worker, Supabase Free, cron-job.org pinger, WORKER_POLL_SECONDS=3 for egress, $0/month (D31)
-- [ ] Humayun: Supabase project, Render Blueprint deploy, secrets, cron-job.org pinger (see HANDOFF)
+      worker, Supabase Free, WORKER_POLL_SECONDS=3 for egress, $0/month; no keep-alive pinger (sleeps
+      when idle; Starter worker is the 24/7 upgrade) (D31)
+- [ ] Humayun: Supabase project, Render Blueprint deploy, secrets (see HANDOFF)
 - [ ] Deploy + live verification (health, docs, status page, scheduled checks, 500 incident + delivery, proxy depth)
 - [ ] README: live links, Mermaid diagram, measured results, hosting limits, demo logins
 - [ ] docs/resume-bullets.md with every number linked to evidence

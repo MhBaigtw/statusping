@@ -140,17 +140,23 @@ See [.env.example](.env.example) for the full list with defaults.
 The planned hosting is free: one Render free web service that also runs the worker and scheduler, plus a
 Supabase Free database ([docs/deploy.md](docs/deploy.md), option (c), D31). That has real costs:
 
-- **Monitoring pauses whenever the instance sleeps, restarts or redeploys.** While it is down, no checks
-  run and no alerts are sent, and missed intervals are not replayed afterwards.
+- **Monitoring only runs while the instance is awake.**
   - Render puts a free service to sleep after 15 minutes without inbound requests, and may restart it at
     any time.
-  - An external pinger (cron-job.org, every 10 minutes) keeps it awake. Render's acceptable-use policy can
-    be read as prohibiting that, so the service could be suspended.
-  - The reliable fix is the paid background worker (option (a), about $7/month).
+  - While it sleeps, no checks run and no alerts are sent. Missed intervals are not replayed, and uptime
+    figures only cover time when checks ran.
+  - Any request (the API, `/api/docs/`, a status page) wakes it in about a minute, and monitoring resumes.
+  - There is deliberately no keep-alive pinger. It would use up the free instance hours this Render
+    workspace shares with another service, and Render's acceptable-use policy can be read as prohibiting
+    it.
+- **Upgrade path for 24/7 monitoring:** add Render's Starter background worker (about $7/month) running
+  `manage.py run_worker`, and turn off `EMBEDDED_WORKER`. No code changes
+  ([docs/deploy.md](docs/deploy.md), option (c)).
 - **Capacity:**
   - The 500 MB database holds roughly 40–45 monitors at a 60-second interval with 30 days of history.
   - Supabase's 5 GB/month egress allowance is why the worker polls the queue every 3 s, not every 1 s.
-- **Cold API:** if the instance has slept, the first request takes about a minute.
+- **Database pause:** if nothing wakes the service for about a week, Supabase Free may pause the database
+  (after a warning email). It is restored from the Supabase dashboard.
 
 ## Project docs
 

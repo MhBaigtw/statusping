@@ -511,7 +511,7 @@ show that the double-claim tests do fail without it.
   - The session pooler's client cap (Pool Size, reportedly ~15 on Nano; unofficial) must stay above our
     ~9 connections plus deploy overlap, so it is checked and raised to 20 if needed.
 
-## D31. Hosting: option (c), one free Render web service with the worker inside it
+## D31. Hosting: option (c), one free Render web service with the worker inside it, no pinger
 
 - **Change (Humayun, 2026-10-29 session):** no paid Render worker. One free web service runs the API and
   also the job worker and scheduler as threads in its single gunicorn process (`EMBEDDED_WORKER=true`,
@@ -520,26 +520,30 @@ show that the double-claim tests do fail without it.
 - **Why it's correct with more than one copy:** during deploys two instances overlap. Claims use SKIP
   LOCKED, finishing is guarded by `locked_by`, and the scheduler takes an advisory lock. These are the
   same guarantees that make several `run_worker` processes safe (D1, D2), so no code changes are needed.
-- **Trade-off, stated plainly everywhere (README, deploy.md, render.yaml):** monitoring pauses whenever
-  the instance sleeps, restarts or redeploys. Missed intervals are not replayed.
-- **Staying awake:**
-  - Render spins a free service down after 15 min without inbound HTTP, so an external pinger
-    (cron-job.org) requests `/api/health/live/` every 10 min.
-  - 750 free instance hours per workspace cover one service for a full month (at most 744 h), and no
-    second free service.
-- **Terms risk:**
+- **Monitoring only runs while the instance is awake.** Render spins a free service down after 15 min
+  without inbound HTTP. While it sleeps, restarts or redeploys, nothing is checked and no alerts are sent;
+  missed intervals are not replayed. Stated in the README, deploy.md and render.yaml.
+- **No keep-alive pinger (revised the same session):** a cron-job.org pinger every 10 min was drafted, then
+  dropped by Humayun.
+  - FixFlow is a free web service in the same Render workspace. The 750 free instance hours are shared,
+    and an always-awake StatusPing (up to 744 h) would exhaust them. Render then suspends **all** free
+    services until the next month.
   - Render's AUP prohibits attempts to "bypass, circumvent, or defeat any access or usage restrictions".
-    A keep-alive pinger can reasonably be read as that.
-  - The free-tier docs neither allow nor forbid it explicitly.
-  - Enforcement is at Render's discretion. Fallback: the $7 Starter worker (option a).
-- **Egress budget (measured):**
+    A pinger built to defeat spin-down can reasonably be read as that, and enforcement can reach the whole
+    account.
+- **Upgrade path for 24/7 monitoring:** a Render Starter background worker (about $7/month) running
+  `run_worker`, with `EMBEDDED_WORKER` removed from the web service. Config only.
+- **Side effect:** if nothing wakes StatusPing for about a week, Supabase Free may pause the database
+  (after a warning email; restorable from the dashboard).
+- **Egress budget (measured), kept:**
   - Supabase Free allows 5 GB/month, and pooler traffic counts.
-  - Idle polling with 2 threads at a 1 s poll measured 2.56 GB/month of server-to-client bytes (empty
-    claim 419 B, heartbeat 380 B, idle tick 730 B; no TLS).
+  - Idle polling with 2 threads at a 1 s poll measured 2.56 GB/month if awake all month (empty claim
+    419 B, heartbeat 380 B, idle tick 730 B; no TLS).
   - `WORKER_POLL_SECONDS=3` brings that to about 1.1 GB/month. The cost is up to 3 s of extra delay
-    before a due job starts.
+    before a due job starts. Real usage is lower while the instance sleeps, and the setting leaves
+    headroom for the Starter worker.
 - **Alternatives rejected:**
-  - Option (a) costs $7/month, which Humayun declined for now.
+  - Option (a), the $7 Starter worker, is declined for now; it is the documented upgrade.
   - Option (b) means operating a VM.
-  - Adding `LISTEN/NOTIFY` to avoid polling would be new code, and it needs a session-mode connection held
-    open. It's only worth doing if egress proves too high.
+  - `LISTEN/NOTIFY` instead of polling would be new code, and it's only worth doing if egress proves too
+    high.

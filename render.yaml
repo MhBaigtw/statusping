@@ -2,9 +2,10 @@
 # runs the job worker + scheduler as threads inside its single gunicorn process
 # (EMBEDDED_WORKER=true, see gunicorn.conf.py). Postgres is Supabase Free (DATABASE_URL, D30).
 #
-# MONITORING PAUSES WHENEVER THIS INSTANCE SLEEPS. Render spins a free web service down after
-# 15 minutes without inbound HTTP traffic; an external pinger on /api/health/live/ every 10 minutes
-# keeps it up (docs/deploy.md, option (c)). Render may also restart it at any time.
+# MONITORING ONLY RUNS WHILE THIS INSTANCE IS AWAKE. Render spins a free web service down after
+# 15 minutes without inbound HTTP traffic, and there is deliberately no keep-alive pinger (free hours
+# shared with FixFlow, Render AUP). For 24/7 monitoring add a Starter `type: worker` service running
+# `python manage.py run_worker --threads 4` and remove EMBEDDED_WORKER (docs/deploy.md, option (c)).
 services:
   - type: web
     name: statusping

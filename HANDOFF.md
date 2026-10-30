@@ -3,9 +3,10 @@
 - **Status: partly done.**
   - **Done and pushed, CI green:** Part A (review fix), B (status page and cache), C (measurements), D
     (retention and hardening) and E (deploy prep).
-  - **Waiting:** Part F (deploy) needs Humayun's Render, Supabase and cron-job.org accounts (see
-    "Actions for Humayun"). Hosting changed to option (c), one free Render service with the embedded
-    worker, plus Supabase Free: $0/month (D30, D31).
+  - **Waiting:** Part F (deploy) needs Humayun's Render and Supabase accounts (see "Actions for
+    Humayun"). Hosting changed to option (c), one free Render service with the embedded worker, plus
+    Supabase Free: $0/month, with no keep-alive pinger, so monitoring only runs while it is awake (D30,
+    D31).
   - **Requirement change:** `test_render_blueprint_shape` now asserts the single-service option (c)
     Blueprint instead of web + worker (D31).
   - Checkpoint 1's handoff is in git history (`git show 8fcb570:HANDOFF.md`).
@@ -138,29 +139,27 @@ webhook path occurrences in web + worker logs: 0
 
 ## Actions for Humayun (needed before Part F)
 
-Hosting is now option (c): one free Render web service with the worker inside it, plus Supabase Free,
-for $0/month (D30, D31). **Monitoring pauses whenever the instance sleeps.** Render's acceptable-use policy
-can be read as prohibiting keep-alive pings; see docs/deploy.md, option (c).
+Hosting is option (c): one free Render web service with the worker inside it, plus Supabase Free, for
+$0/month (D30, D31). There is no keep-alive pinger, so **monitoring only runs while the instance is
+awake**. The 24/7 upgrade is the Starter worker (about $7/month).
 
 I can't create accounts, so these steps are yours:
 
 1. **Supabase (Free):** create a project in **West US (Oregon)**. Under Connect, copy the **Session
    pooler** string (port 5432, user `postgres.<ref>`) with the database password filled in. Don't paste
    it to me.
-2. **Render:** New → **Blueprint** → repo `MhBaigtw/statusping`. `render.yaml` creates one free web
-   service, `statusping`. No billing is needed. Keep it the only free web service in the workspace
-   (750 h/month covers exactly one).
+2. **Render:** in the workspace that already has FixFlow, New → **Blueprint** → repo
+   `MhBaigtw/statusping`. `render.yaml` creates one free web service, `statusping`. No billing is needed.
 3. **Secrets on that service:** `DATABASE_URL` (the Supabase string) and `DEMO_PASSWORD` (a **new**
    demo-only password, which will be published in the README).
-4. **cron-job.org:** a job requesting `https://<service>.onrender.com/api/health/live/` every 10 minutes,
-   with failure emails on. Optionally, a second job on `/api/health/` (503 means the worker is dead).
-5. **Reply "continue"** with the `*.onrender.com` URL. I will then:
-   - verify live: health, docs, the status page, scheduled checks, an httpbin 500 incident and its
-     delivery log, proxy depth, and the embedded worker running under gunicorn;
+4. **Reply "continue"** with the `*.onrender.com` URL. I will then:
+   - verify live while the instance is awake: health, docs, the status page, scheduled checks, an
+     httpbin 500 incident and its delivery log, proxy depth, the embedded worker running under gunicorn,
+     and that it sleeps after 15 idle minutes and resumes on the next request;
    - write the README and `docs/resume-bullets.md`;
    - run the final verification, ask before pushing, and finalize this handoff.
 
 ## Repo
 
-- https://github.com/MhBaigtw/statusping. Pushed: `6ae2bc1` (CI green).
+- https://github.com/MhBaigtw/statusping. Pushed: through the option (c) deploy config (see git log).
 - Local commits after that (docs only: tasks, deploy decision, this handoff) will be pushed with Part F.
