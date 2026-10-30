@@ -10,6 +10,8 @@ StatusPing needs three things running all the time:
 Research date: **2026-10-30**. Prices and limits change, so re-check the linked pages before paying for
 anything.
 
+**Chosen (Humayun, 2026-10-30): option (a), Render free web + Render Starter worker + Neon Launch.** Alerts are verified through the delivery log (no real Discord webhook), and demo logins are public.
+
 ## The finding that changes the plan: a free Neon database can't run all month
 
 - Neon's Free plan gives **100 CU-hours per project per month**. Scale-to-zero after 5 idle minutes is

@@ -473,3 +473,20 @@ show that the double-claim tests do fail without it.
 - **Tests:** an exception that quotes the webhook URL ends up masked in the job's `last_error`, the
   summary line and the formatted traceback (`tests/test_logging.py`). This comes on top of the existing
   httpx/httpcore WARNING pin (D16).
+
+## D29. Hosting: Render (free web + Starter worker) with Neon Launch
+
+- **Choice (Humayun, 2026-10-30):** option (a) in docs/deploy.md. Render runs the web service on the free
+  plan, which sleeps after 15 min idle so the API wakes in about a minute, and the background worker on
+  Starter (about $7/month; the price was to be confirmed on Render's pricing page). Neon Launch hosts the
+  database with scale-to-zero disabled (about $19.70/month at 0.25 CU), for an estimated **~$27/month**.
+- **Why not Neon Free:** the always-on worker keeps the database busy, so it never scales to zero. 0.25
+  CU × 730 h = 182.5 CU-hours against the free 100, so it would be suspended after about 17 days.
+- **Why not option (c):** monitoring would stop whenever the web service sleeps.
+- **Why not option (b):** a free Oracle VM means owning patching and backups, plus idle-reclamation risk.
+- **Health checks:** Render's web health check uses `/api/health/live/`, and an external check on
+  `/api/health/` detects a dead worker (D27).
+- **Demo logins:** public, as in FixFlow, with a demo-only password chosen for production (never the local
+  `.env` one).
+- **No real Discord webhook:** live alert verification uses the deliveries endpoint and the worker's
+  structured log lines.

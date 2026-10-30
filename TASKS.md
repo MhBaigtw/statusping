@@ -49,10 +49,15 @@
 - [x] Query-count test for the status page
 - [x] Health 503 on stale worker + /api/health/live/
 - [x] Structured per-job log line, webhook URLs masked
-- [ ] Push Parts A-D (ask first) and confirm CI
+- [x] Pushed Parts A-D (approved); CI green: run 40985948174, 460 passed, 97.83%
 
 ## Phase 4
-- [ ] Choose hosting (web + always-on worker + Postgres), checking current free/cheap options
-- [ ] Deploy + live verification
-- [ ] README Mermaid diagram (API, Postgres incl. jobs table, worker + scheduler, targets, webhooks)
+- [x] Research hosting options with current pricing (docs/deploy.md)
+- [x] Deploy config: gunicorn.conf.py, bin/render-build.sh, render.yaml draft, systemd + Caddy files
+- [x] Humayun's choices (2026-10-30): (a) Render free web + Starter worker + Neon Launch;
+      no real Discord webhook (verify via the delivery log); demo logins public
+- [ ] Humayun: Render + Neon accounts/billing, Neon project, Blueprint deploy, secrets (see HANDOFF)
+- [ ] Deploy + live verification (health, docs, status page, scheduled checks, 500 incident + delivery, proxy depth)
+- [ ] README: live links, Mermaid diagram, measured results, hosting limits, demo logins
 - [ ] docs/resume-bullets.md with every number linked to evidence
+- [ ] Final verification, push (ask), CI, HANDOFF Checkpoint 2
