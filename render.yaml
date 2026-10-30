@@ -1,5 +1,5 @@
 # DRAFT Render Blueprint for hosting option (a) in docs/deploy.md:
-#   web (free) + background worker (Starter, paid) + Postgres elsewhere (DATABASE_URL).
+#   web (free) + background worker (Starter, paid) + Supabase Free Postgres (DATABASE_URL, D30).
 # Not applied anywhere yet: Humayun chooses the option first. For option (c) delete the
 # worker service and add EMBEDDED_WORKER=true to the web service instead.
 envVarGroups:
@@ -28,7 +28,7 @@ services:
     autoDeployTrigger: checksPass   # deploy only after GitHub CI passes
     envVars:
       - fromGroup: statusping-shared
-      - key: DATABASE_URL           # sslmode=require is forced by prod.py if absent
+      - key: DATABASE_URL           # Supabase SESSION pooler (:5432, IPv4); sslmode=require forced by prod.py
         sync: false
       - key: DEMO_PASSWORD          # optional; seeds demo users at build time
         sync: false

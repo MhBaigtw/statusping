@@ -12,6 +12,52 @@ anything.
 
 **Chosen (Humayun, 2026-10-30): option (a), Render free web + Render Starter worker + Neon Launch.** Alerts are verified through the delivery log (no real Discord webhook), and demo logins are public.
 
+**Revised (Humayun, 2026-10-29 session): Supabase Free replaces Neon Launch**, so the total is the
+Starter worker only (~$7/month). See "Supabase Free" below and D30.
+
+## Supabase Free: what was checked
+
+Checked on 2026-10-29 against Supabase's own pages:
+
+- **No compute-hour cap.** The [pricing page](https://supabase.com/pricing) lists Free as "Shared CPU •
+  500 MB RAM", 500 MB database, 5 GB egress, 2 active projects, and no compute-hour quota. The
+  [compute docs](https://supabase.com/docs/guides/platform/compute-and-disk) list Free (Nano) at $0 per
+  hour, with the caveat that "Compute resources on the Free plan are subject to change".
+- **Pausing is for inactivity only.** "Free projects are paused after 1 week of inactivity" (pricing).
+  The [pausing docs](https://supabase.com/docs/guides/platform/project-pausing) define inactive as not
+  receiving "sufficient user database activity over the past week". Our worker queries the database
+  every second, so it should never count as inactive. A pause is preceded by a warning email about a
+  week ahead, and a paused project can be restored for up to a year.
+- **Connection string: the Supavisor session pooler** (`postgres.<ref>@aws-<n>-<region>.pooler.supabase.com:5432`).
+  - The direct connection is IPv6 unless you buy the IPv4 add-on, and Render's outbound traffic is IPv4.
+  - The [connection docs](https://supabase.com/docs/guides/database/connecting-to-postgres) say the
+    shared pooler is IPv4 on every plan, and recommend session mode for "a persistent backend on an
+    IPv4-only network".
+  - Transaction mode (port 6543) is unsuitable here. It hands a server connection to a different client
+    between transactions, so session state doesn't survive. The queue's `FOR UPDATE SKIP LOCKED` claims,
+    `locked_by` leases and row locks all sit inside single transactions, which session mode keeps on one
+    server connection for the client's whole session.
+
+**The new limit is the 500 MB database, not compute.**
+- Measured locally: a CheckResult row costs about **154 bytes** with its indexes (6.17M rows in 951 MB),
+  and a job row about 150 bytes plus its indexes.
+- Retention keeps 30 days of checks and 7 days of succeeded jobs. A 60-second monitor therefore holds
+  about 43,200 checks (~6.7 MB) and 10,080 jobs (~2.5 MB), roughly **9 MB per 60-second monitor**.
+- After Postgres and Supabase's own schemas, that is room for **about 40–45 monitors at 60 s** (more at
+  longer intervals). That is plenty for the demo, but not for real customers.
+- I could not find on Supabase's pages what happens at the 500 MB limit. Watch the usage page.
+
+**The connection budget is the second limit.**
+- In session mode, each client holds one server connection. One forum answer says the session-mode
+  client cap equals the "Pool Size" setting, and a third-party guide puts Nano at about 15. Neither is
+  official.
+- StatusPing holds about 9 connections:
+  - the worker: 4 job threads plus the scheduler and heartbeat, about 6;
+  - the web service: 2 gunicorn processes;
+  - the build's `migrate`, briefly.
+- During a deploy the old and new instances overlap for a moment, so check the Pool Size in Database
+  settings and raise it to 20 if it is lower.
+
 ## The finding that changes the plan: a free Neon database can't run all month
 
 - Neon's Free plan gives **100 CU-hours per project per month**. Scale-to-zero after 5 idle minutes is
@@ -71,9 +117,10 @@ makes that a ~17-day setup.
 
 **Steps** (once the option is chosen):
 
-1. **Database.** Neon: create a project in AWS us-west-2 (to match Render Oregon) on the **Launch** plan,
-   and disable scale-to-zero. Copy the **direct** (non-pooled) connection string; `prod.py` adds
-   `sslmode=require` if it's missing.
+1. **Database.** Supabase Free project in **West US (Oregon)**, to match Render Oregon. Copy the
+   **session pooler** connection string (port 5432, user `postgres.<ref>`), not the direct connection
+   (IPv6) and not the transaction pooler (port 6543). `prod.py` adds `sslmode=require` if it's missing.
+   (Previously: Neon Launch with scale-to-zero disabled and the direct string.)
 2. **Blueprint.** In Render: New → Blueprint → this repo. `render.yaml` creates:
    - the `statusping` web service (free), with the build step `bin/render-build.sh`: pip install,
      collectstatic, **migrate**, createcachetable, and optional `seed_demo`;

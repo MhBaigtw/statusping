@@ -490,3 +490,23 @@ show that the double-claim tests do fail without it.
   `.env` one).
 - **No real Discord webhook:** live alert verification uses the deliveries endpoint and the worker's
   structured log lines.
+
+## D30. Database: Supabase Free (session pooler) instead of Neon Launch
+
+- **Change (Humayun, 2026-10-29 session):** Supabase Free hosts Postgres. Render is unchanged (free web +
+  Starter worker), so the estimate drops from ~$27 to **~$7/month**. This supersedes D29's database choice.
+- **Checked on Supabase's pages before creating anything:**
+  - Free has no compute-hour quota (Nano, $0/hour, "subject to change").
+  - It pauses only after a week without "sufficient user database activity", which the worker's
+    every-second polling rules out.
+  - Details and links are in docs/deploy.md, "Supabase Free".
+- **Connection: the Supavisor session pooler, port 5432.**
+  - The direct connection is IPv6 without a paid add-on, and Render can't reach it.
+  - Transaction mode (6543) doesn't keep session state between transactions.
+  - Session mode keeps one server connection per client, so the queue's locks and SKIP LOCKED claims
+    behave exactly as on a direct connection. No code changes.
+- **New limits, accepted:**
+  - The 500 MB database holds about 40–45 monitors at 60 s (~9 MB each, measured row sizes, 30-day
+    retention).
+  - The session pooler's client cap (Pool Size, reportedly ~15 on Nano; unofficial) must stay above our
+    ~9 connections plus deploy overlap, so it is checked and raised to 20 if needed.

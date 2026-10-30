@@ -3,7 +3,8 @@
 - **Status: partly done.**
   - **Done and pushed, CI green:** Part A (review fix), B (status page and cache), C (measurements), D
     (retention and hardening) and E (deploy prep).
-  - **Waiting:** Part F (deploy) needs Humayun's Render and Neon accounts (see "Actions for Humayun").
+  - **Waiting:** Part F (deploy) needs Humayun's Render and Supabase accounts (see "Actions for
+    Humayun"). The database moved from Neon Launch to Supabase Free (D30), about $7/month in total.
   - Checkpoint 1's handoff is in git history (`git show 8fcb570:HANDOFF.md`).
 - **Versions:** Python 3.13.3, Django 5.2.18, DRF 3.18.3, httpx 0.28.1 / httpcore 1.0.9, PostgreSQL 16.14
   locally and 16 in CI.
@@ -136,14 +137,15 @@ webhook path occurrences in web + worker logs: 0
 
 I can't create accounts or enter billing details, so these steps are yours:
 
-1. **Neon:** create a new project (Launch plan) in **AWS us-west-2 (Oregon)**, then:
-   - In the compute settings, **disable scale-to-zero**.
-   - Copy the **direct** connection string (not the `-pooler` one).
+1. **Supabase (Free, replaces Neon Launch, D30):** create a project in **West US (Oregon)**, then:
+   - In Database settings, make sure the pooler **Pool Size is at least 20**.
+   - Under Connect, copy the **Session pooler** string (port 5432, user `postgres.<ref>`), with the
+     database password filled in.
    - Don't paste it to me.
 2. **Render:** make sure billing is set up (the Starter worker is paid), and **confirm the Starter worker
    price** on render.com/pricing. Then New → **Blueprint** → repo `MhBaigtw/statusping` (`render.yaml`
    creates `statusping` and `statusping-worker`).
-3. **In Render, for both services:** set `DATABASE_URL` to the Neon string.
+3. **In Render, for both services:** set `DATABASE_URL` to the Supabase session pooler string.
 4. **Web service only:** set `DEMO_PASSWORD` to a **new demo-only password**. It will be published in the
    README, so don't reuse anything.
 5. **Reply "continue"** with the `*.onrender.com` URL. I will then:

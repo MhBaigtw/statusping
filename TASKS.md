@@ -56,7 +56,8 @@
 - [x] Deploy config: gunicorn.conf.py, bin/render-build.sh, render.yaml draft, systemd + Caddy files
 - [x] Humayun's choices (2026-10-30): (a) Render free web + Starter worker + Neon Launch;
       no real Discord webhook (verify via the delivery log); demo logins public
-- [ ] Humayun: Render + Neon accounts/billing, Neon project, Blueprint deploy, secrets (see HANDOFF)
+- [x] Revised (2026-10-29 session): Supabase Free (session pooler) replaces Neon Launch, ~$7/month (D30)
+- [ ] Humayun: Supabase project, Render billing + Blueprint deploy, secrets (see HANDOFF)
 - [ ] Deploy + live verification (health, docs, status page, scheduled checks, 500 incident + delivery, proxy depth)
 - [ ] README: live links, Mermaid diagram, measured results, hosting limits, demo logins
 - [ ] docs/resume-bullets.md with every number linked to evidence
