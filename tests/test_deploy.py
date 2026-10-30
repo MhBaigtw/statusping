@@ -70,17 +70,21 @@ def test_embedded_worker_flag_spellings(monkeypatch, value):
 
 
 def test_render_blueprint_shape():
+    """Option (c), D31: one free web service that runs the worker inside it."""
     blueprint = yaml.safe_load((BASE / "render.yaml").read_text(encoding="utf-8"))
-    web, worker = blueprint["services"]
-    assert web["type"] == "web" and worker["type"] == "worker"
+    (web,) = blueprint["services"]
+    assert web["type"] == "web" and web["plan"] == "free"
     # The platform's web health check must not depend on the worker (D27).
     assert web["healthCheckPath"] == "/api/health/live/"
-    assert "run_worker" in worker["startCommand"]
+    assert "gunicorn.conf.py" in web["startCommand"]
     assert "migrate" in (BASE / "bin" / "render-build.sh").read_text(encoding="utf-8")
-    assert "migrate" not in worker["buildCommand"]  # only one service migrates
-    for service in (web, worker):
-        assert {"fromGroup": "statusping-shared"} in service["envVars"]
-        assert {"key": "DATABASE_URL", "sync": False} in service["envVars"]
+    env = {item["key"]: item for item in web["envVars"]}
+    assert env["EMBEDDED_WORKER"]["value"] == "true"
+    assert env["DJANGO_SETTINGS_MODULE"]["value"] == "config.settings.prod"
+    assert float(env["WORKER_POLL_SECONDS"]["value"]) >= 1
+    for secret in ("DATABASE_URL", "DEMO_PASSWORD"):
+        assert env[secret] == {"key": secret, "sync": False}  # never a value in the repo
+    assert env["SECRET_KEY"] == {"key": "SECRET_KEY", "generateValue": True}
 
 
 def test_render_hostname_is_trusted_in_prod(monkeypatch):

@@ -3,8 +3,11 @@
 - **Status: partly done.**
   - **Done and pushed, CI green:** Part A (review fix), B (status page and cache), C (measurements), D
     (retention and hardening) and E (deploy prep).
-  - **Waiting:** Part F (deploy) needs Humayun's Render and Supabase accounts (see "Actions for
-    Humayun"). The database moved from Neon Launch to Supabase Free (D30), about $7/month in total.
+  - **Waiting:** Part F (deploy) needs Humayun's Render, Supabase and cron-job.org accounts (see
+    "Actions for Humayun"). Hosting changed to option (c), one free Render service with the embedded
+    worker, plus Supabase Free: $0/month (D30, D31).
+  - **Requirement change:** `test_render_blueprint_shape` now asserts the single-service option (c)
+    Blueprint instead of web + worker (D31).
   - Checkpoint 1's handoff is in git history (`git show 8fcb570:HANDOFF.md`).
 - **Versions:** Python 3.13.3, Django 5.2.18, DRF 3.18.3, httpx 0.28.1 / httpcore 1.0.9, PostgreSQL 16.14
   locally and 16 in CI.
@@ -135,22 +138,25 @@ webhook path occurrences in web + worker logs: 0
 
 ## Actions for Humayun (needed before Part F)
 
-I can't create accounts or enter billing details, so these steps are yours:
+Hosting is now option (c): one free Render web service with the worker inside it, plus Supabase Free,
+for $0/month (D30, D31). **Monitoring pauses whenever the instance sleeps.** Render's acceptable-use policy
+can be read as prohibiting keep-alive pings; see docs/deploy.md, option (c).
 
-1. **Supabase (Free, replaces Neon Launch, D30):** create a project in **West US (Oregon)**, then:
-   - In Database settings, make sure the pooler **Pool Size is at least 20**.
-   - Under Connect, copy the **Session pooler** string (port 5432, user `postgres.<ref>`), with the
-     database password filled in.
-   - Don't paste it to me.
-2. **Render:** make sure billing is set up (the Starter worker is paid), and **confirm the Starter worker
-   price** on render.com/pricing. Then New → **Blueprint** → repo `MhBaigtw/statusping` (`render.yaml`
-   creates `statusping` and `statusping-worker`).
-3. **In Render, for both services:** set `DATABASE_URL` to the Supabase session pooler string.
-4. **Web service only:** set `DEMO_PASSWORD` to a **new demo-only password**. It will be published in the
-   README, so don't reuse anything.
+I can't create accounts, so these steps are yours:
+
+1. **Supabase (Free):** create a project in **West US (Oregon)**. Under Connect, copy the **Session
+   pooler** string (port 5432, user `postgres.<ref>`) with the database password filled in. Don't paste
+   it to me.
+2. **Render:** New → **Blueprint** → repo `MhBaigtw/statusping`. `render.yaml` creates one free web
+   service, `statusping`. No billing is needed. Keep it the only free web service in the workspace
+   (750 h/month covers exactly one).
+3. **Secrets on that service:** `DATABASE_URL` (the Supabase string) and `DEMO_PASSWORD` (a **new**
+   demo-only password, which will be published in the README).
+4. **cron-job.org:** a job requesting `https://<service>.onrender.com/api/health/live/` every 10 minutes,
+   with failure emails on. Optionally, a second job on `/api/health/` (503 means the worker is dead).
 5. **Reply "continue"** with the `*.onrender.com` URL. I will then:
    - verify live: health, docs, the status page, scheduled checks, an httpbin 500 incident and its
-     delivery log, and proxy depth with forged `X-Forwarded-For`;
+     delivery log, proxy depth, and the embedded worker running under gunicorn;
    - write the README and `docs/resume-bullets.md`;
    - run the final verification, ask before pushing, and finalize this handoff.
 

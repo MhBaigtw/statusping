@@ -1,47 +1,38 @@
-# DRAFT Render Blueprint for hosting option (a) in docs/deploy.md:
-#   web (free) + background worker (Starter, paid) + Supabase Free Postgres (DATABASE_URL, D30).
-# Not applied anywhere yet: Humayun chooses the option first. For option (c) delete the
-# worker service and add EMBEDDED_WORKER=true to the web service instead.
-envVarGroups:
-  - name: statusping-shared
-    envVars:
-      - key: DJANGO_SETTINGS_MODULE
-        value: config.settings.prod
-      - key: PYTHON_VERSION
-        value: "3.13"
-      - key: SECRET_KEY             # one value shared by web and worker
-        generateValue: true
-      - key: NUM_PROXIES            # starting value from FixFlow; MEASURE it live (deploy.md s.4)
-        value: "3"
-      - key: DB_CONN_MAX_AGE
-        value: "60"
-
+# Render Blueprint for hosting option (c) in docs/deploy.md (D31): ONE free web service that also
+# runs the job worker + scheduler as threads inside its single gunicorn process
+# (EMBEDDED_WORKER=true, see gunicorn.conf.py). Postgres is Supabase Free (DATABASE_URL, D30).
+#
+# MONITORING PAUSES WHENEVER THIS INSTANCE SLEEPS. Render spins a free web service down after
+# 15 minutes without inbound HTTP traffic; an external pinger on /api/health/live/ every 10 minutes
+# keeps it up (docs/deploy.md, option (c)). Render may also restart it at any time.
 services:
   - type: web
     name: statusping
     runtime: python
-    plan: free                      # sleeps after 15 min idle; the WORKER keeps monitoring
-    region: oregon                  # keep the database in the same region
+    plan: free
+    region: oregon                  # same region as the Supabase project (West US, Oregon)
     buildCommand: bash bin/render-build.sh
     startCommand: gunicorn config.wsgi:application -c gunicorn.conf.py
     healthCheckPath: /api/health/live/   # web-only; /api/health/ is 503 when the worker is dead
     autoDeployTrigger: checksPass   # deploy only after GitHub CI passes
     envVars:
-      - fromGroup: statusping-shared
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.prod
+      - key: PYTHON_VERSION
+        value: "3.13"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: NUM_PROXIES            # starting value from FixFlow; MEASURE it live (deploy.md s.4)
+        value: "3"
+      - key: DB_CONN_MAX_AGE
+        value: "60"
+      - key: EMBEDDED_WORKER        # job threads + scheduler inside the web process (forces 1 gunicorn process)
+        value: "true"
+      - key: WORKER_THREADS
+        value: "2"
+      - key: WORKER_POLL_SECONDS    # idle poll every 3 s, not 1 s: ~1.1 GB/month of Supabase's 5 GB egress (D31)
+        value: "3"
       - key: DATABASE_URL           # Supabase SESSION pooler (:5432, IPv4); sslmode=require forced by prod.py
         sync: false
       - key: DEMO_PASSWORD          # optional; seeds demo users at build time
-        sync: false
-
-  - type: worker
-    name: statusping-worker
-    runtime: python
-    plan: starter                   # Render has no free plan for background workers
-    region: oregon
-    buildCommand: pip install -r requirements.txt
-    startCommand: python manage.py run_worker --threads 4
-    autoDeployTrigger: checksPass
-    envVars:
-      - fromGroup: statusping-shared
-      - key: DATABASE_URL
         sync: false

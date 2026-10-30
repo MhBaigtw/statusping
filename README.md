@@ -135,6 +135,23 @@ See [.env.example](.env.example) for the full list with defaults.
 - **CI:** GitHub Actions runs ruff, the migration check, `check --deploy` with prod settings, schema
   validation and pytest with coverage against Postgres 16.
 
+## Known limits of the free deployment
+
+The planned hosting is free: one Render free web service that also runs the worker and scheduler, plus a
+Supabase Free database ([docs/deploy.md](docs/deploy.md), option (c), D31). That has real costs:
+
+- **Monitoring pauses whenever the instance sleeps, restarts or redeploys.** While it is down, no checks
+  run and no alerts are sent, and missed intervals are not replayed afterwards.
+  - Render puts a free service to sleep after 15 minutes without inbound requests, and may restart it at
+    any time.
+  - An external pinger (cron-job.org, every 10 minutes) keeps it awake. Render's acceptable-use policy can
+    be read as prohibiting that, so the service could be suspended.
+  - The reliable fix is the paid background worker (option (a), about $7/month).
+- **Capacity:**
+  - The 500 MB database holds roughly 40–45 monitors at a 60-second interval with 30 days of history.
+  - Supabase's 5 GB/month egress allowance is why the worker polls the queue every 3 s, not every 1 s.
+- **Cold API:** if the instance has slept, the first request takes about a minute.
+
 ## Project docs
 
 - [SPEC.md](SPEC.md): the full four-phase specification

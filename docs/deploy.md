@@ -15,6 +15,12 @@ anything.
 **Revised (Humayun, 2026-10-29 session): Supabase Free replaces Neon Launch**, so the total is the
 Starter worker only (~$7/month). See "Supabase Free" below and D30.
 
+**Revised again (Humayun, same session): option (c), $0/month.**
+- One free Render web service runs the API and also the job worker and scheduler as threads
+  (`EMBEDDED_WORKER=true`), on Supabase Free through the session pooler. There is no paid worker.
+- An external pinger keeps the instance awake. See option (c) below and D31.
+- **Monitoring pauses whenever the instance sleeps or restarts.**
+
 ## Supabase Free: what was checked
 
 Checked on 2026-10-29 against Supabase's own pages:
@@ -28,6 +34,10 @@ Checked on 2026-10-29 against Supabase's own pages:
   receiving "sufficient user database activity over the past week". Our worker queries the database
   every second, so it should never count as inactive. A pause is preceded by a warning email about a
   week ahead, and a paused project can be restored for up to a year.
+- **Egress: 5 GB/month on Free, and shared-pooler traffic counts**
+  ([egress docs](https://supabase.com/docs/guides/platform/manage-your-usage/egress)). Going over leads
+  to an email and a grace period, then possible restriction until the next billing cycle. The measured
+  budget is in option (c).
 - **Connection string: the Supavisor session pooler** (`postgres.<ref>@aws-<n>-<region>.pooler.supabase.com:5432`).
   - The direct connection is IPv6 unless you buy the IPv4 add-on, and Render's outbound traffic is IPv4.
   - The [connection docs](https://supabase.com/docs/guides/database/connecting-to-postgres) say the
@@ -51,7 +61,7 @@ Checked on 2026-10-29 against Supabase's own pages:
 - In session mode, each client holds one server connection. One forum answer says the session-mode
   client cap equals the "Pool Size" setting, and a third-party guide puts Nano at about 15. Neither is
   official.
-- StatusPing holds about 9 connections:
+- With option (c) (chosen), StatusPing holds about 4 connections. With option (a) it holds about 9:
   - the worker: 4 job threads plus the scheduler and heartbeat, about 6;
   - the web service: 2 gunicorn processes;
   - the build's `migrate`, briefly.
@@ -82,7 +92,7 @@ month. The table below prices the variants honestly.
 |---|---|---|---|
 | **Monthly cost** | Worker **$7** (Starter) + web **$0** (free) + DB: Neon Launch **~$19.70**, so **~$27/month**. Neon Free only lasts about 17 days. | **$0** within Always Free limits. A card is needed for sign-up verification. | **$0** |
 | **Setup effort** | Low: Blueprint (`render.yaml`, drafted) plus one DB URL | High: VM, firewall, Postgres, Caddy (TLS), systemd, backups, OS updates | Lowest: one service plus a DB URL |
-| **What breaks** | Free web sleeps after 15 min idle, so the API and status page take about a minute to wake up. **Monitoring continues** (the worker is a separate paid service). | Oracle may **reclaim idle** Always Free VMs. Free A1 capacity is often unavailable in popular regions. You own patching, backups and recovery. | **Monitoring stops whenever the web service sleeps** (15 min without inbound traffic). Keeping it awake with an external pinger then makes the DB never idle, which brings back the Neon Free 17-day limit. Render may restart free services at any time. |
+| **What breaks** | Free web sleeps after 15 min idle, so the API and status page take about a minute to wake up. **Monitoring continues** (the worker is a separate paid service). | Oracle may **reclaim idle** Always Free VMs. Free A1 capacity is often unavailable in popular regions. You own patching, backups and recovery. | **Monitoring stops whenever the web service sleeps** (15 min without inbound traffic). An external pinger keeps it awake, but see Render's terms in section (c). With Neon Free, an always-awake service brings back the 17-day limit; Supabase Free has no compute-hour cap. Render may restart free services at any time. |
 | **Dead-worker detection** | External check on `/api/health/` (503 when the heartbeat is > 60 s old). Render's own web health check uses `/api/health/live/`. Render restarts a crashed worker process. | systemd `Restart=always` plus an external check on `/api/health/` | `/api/health/` is 503 once the sleeping process stops beating, but the check itself wakes the service, so it only proves the worker is alive while someone is looking. |
 
 **My recommendation:**
@@ -115,7 +125,8 @@ makes that a ~17-day setup.
   not verify its price.
 - **Measured fit:** our worker used about 77 MB in the e2e run, so 512 MB is plenty.
 
-**Steps** (once the option is chosen):
+**Steps** (for option (a); **not the current plan**, which is option (c). `render.yaml` now holds the
+option (c) Blueprint, so (a) would need the worker service added back):
 
 1. **Database.** Supabase Free project in **West US (Oregon)**, to match Render Oregon. Copy the
    **session pooler** connection string (port 5432, user `postgres.<ref>`), not the direct connection
@@ -175,14 +186,78 @@ makes that a ~17-day setup.
 
 ## (c) Render free web service with the worker inside it
 
-- **Config only, no code changes:** set `EMBEDDED_WORKER=true` on the web service and delete the worker
-  service from `render.yaml`. `gunicorn.conf.py` then starts the job threads and scheduler inside the
-  single gunicorn process, and stops them gracefully on shutdown. Tested in `tests/test_deploy.py`.
-- **Stated plainly: while the service is asleep, nothing is checked and no alerts are sent.** It sleeps
-  after 15 minutes without inbound requests. Background job traffic doesn't count, because only inbound
-  HTTP keeps it awake.
-- **Keeping it awake** with an external pinger just moves the problem: the database then never idles and
-  Neon Free stops after about 17 days. It also leans on a free tier in a way it isn't meant to be used.
+**This is the chosen option (D31).** `render.yaml` now describes exactly this: one free web service, with
+no worker service.
+
+**How it runs:**
+- **Config only, no code changes.** `EMBEDDED_WORKER=true` makes `gunicorn.conf.py` force a single
+  gunicorn process and start the job threads (`WORKER_THREADS=2`) and the scheduler inside it after
+  Django loads. On shutdown it stops claiming, and in-flight jobs get up to 25 s. Tested in
+  `tests/test_deploy.py`.
+- **Two copies at once are safe.** During a deploy the new instance starts before the old one stops, so
+  two job runners overlap for a moment. Claims use `FOR UPDATE SKIP LOCKED`, finishing is guarded by
+  `locked_by`, and the scheduler takes an advisory lock, so no job runs twice concurrently and no check is
+  dispatched twice (the same guarantees as several `run_worker` processes).
+- **Database connections:** about 4 (2 job threads, the control thread, and 1 web process), plus the
+  build's `migrate` briefly. That is well under the session pooler's client cap.
+
+**Stated plainly: monitoring pauses whenever the instance is not running.**
+- While it is asleep, restarting or being redeployed, no checks run and no alerts are sent.
+- Checks that were due are dispatched once it comes back, not replayed for the gap.
+- Render "might restart a Free web service at any time". A restart costs about a minute of monitoring,
+  and the reaper re-queues any job whose lease expired mid-run.
+
+**Keeping it awake: an external pinger.**
+- Render spins a free web service down after **15 minutes without inbound traffic** ("both HTTP requests
+  and WebSocket messages"). The worker's own outbound traffic doesn't count.
+- A request every **10 minutes** to `/api/health/live/` leaves a 5-minute margin.
+- **cron-job.org** is free, allows intervals down to one minute, and times out after 30 s
+  ([FAQ](https://cron-job.org/en/faq/)). It may disable a job that fails more than 25 times in a row, and
+  it can email on failure.
+- Setup:
+  1. Sign up at cron-job.org and choose **Create cronjob**.
+  2. URL: `https://<service>.onrender.com/api/health/live/`.
+  3. Schedule: every 10 minutes.
+  4. Turn on the email notification for failures.
+- **Optional second job:** the same setup on `/api/health/`, which returns 503 when the worker heartbeat is
+  over 60 s old (D27). This is the only alert for "the worker is dead", because StatusPing can't alert on
+  itself.
+- If the instance ever does sleep, the first ping's request wakes it. Spin-up takes about a minute, so that
+  ping times out at 30 s and the next one succeeds.
+
+**Free instance hours: they cover one service, barely.**
+- Render grants **750 free instance hours per workspace per calendar month**, and a free web service uses
+  them "as long as it's running" ([Render free instances](https://render.com/docs/free)).
+- One always-on service needs at most 31 × 24 = **744 hours**, which leaves 6 hours.
+- **Any second free web service in the same workspace would run both out before month end.** At that point
+  Render "suspends all of your Free web services until the start of the next month". Keep this the only
+  free web service in the workspace.
+
+**Render's terms: not explicitly prohibited, but it's a risk.**
+- The [free-tier docs](https://render.com/docs/free) don't mention keep-alive pings.
+- The [Acceptable Use Policy](https://render.com/acceptable-use) (modified 2025-08-22) prohibits attempts
+  to "bypass, circumvent, or defeat any access or usage restrictions". It also prohibits using the service
+  to "intentionally misuse the Service to avoid payment". Spin-down is a usage restriction of the free
+  tier, so a pinger built to defeat it can reasonably be read as covered. Render decides "in its sole
+  discretion" and may warn, suspend or terminate the account.
+- A Render staff reply in its community forum reportedly calls keep-alive pinging abuse. I couldn't open
+  the thread to confirm the wording (search summary only).
+- The free-tier docs also say Render "may suspend a Free web service that initiates an uncommonly high
+  volume of traffic over the public internet", and give "Accessing an external database" as an example.
+  Our database traffic is steady but small (see egress below).
+- **The risk of proceeding** is a warning, or suspension of the free service or the account. The fallback
+  is option (a): add the Starter worker (about $7/month) and drop the pinger.
+
+**Supabase egress (measured, D31).**
+- Supabase Free includes **5 GB egress** a month, and traffic through the shared pooler counts.
+- Measured locally through a byte-counting proxy (no TLS):
+  - one empty queue poll returns 419 B;
+  - a heartbeat returns 380 B;
+  - an idle scheduler tick returns 730 B.
+- With 2 job threads that comes to **2.56 GB/month at the default 1 s poll**, before any checks run.
+- `render.yaml` therefore sets `WORKER_POLL_SECONDS=3`: about **1.1 GB/month idle**. A due job then waits
+  up to 3 s to start, which doesn't matter for checks every 60 s or more.
+- Real checks, API calls and TLS overhead come on top, so watch the usage page after the first day.
 
 ---
 
@@ -198,6 +273,7 @@ makes that a ~17-day setup.
 | `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS` | extra hosts. On Render the `*.onrender.com` host is added automatically |
 | `WEB_CONCURRENCY`, `PORT` | gunicorn processes and port |
 | `EMBEDDED_WORKER`, `WORKER_THREADS` | option (c) only |
+| `WORKER_POLL_SECONDS` | idle queue poll (default 1 s). `render.yaml` sets 3 to save Supabase egress |
 | `DEMO_PASSWORD` | optional: seeds demo users at build time |
 
 - **Start commands:** web `gunicorn config.wsgi:application -c gunicorn.conf.py`; worker

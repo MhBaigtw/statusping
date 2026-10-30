@@ -510,3 +510,36 @@ show that the double-claim tests do fail without it.
     retention).
   - The session pooler's client cap (Pool Size, reportedly ~15 on Nano; unofficial) must stay above our
     ~9 connections plus deploy overlap, so it is checked and raised to 20 if needed.
+
+## D31. Hosting: option (c), one free Render web service with the worker inside it
+
+- **Change (Humayun, 2026-10-29 session):** no paid Render worker. One free web service runs the API and
+  also the job worker and scheduler as threads in its single gunicorn process (`EMBEDDED_WORKER=true`,
+  2 job threads). Postgres stays on Supabase Free through the session pooler (D30). Cost: **$0/month**.
+  This supersedes D29's Render layout.
+- **Why it's correct with more than one copy:** during deploys two instances overlap. Claims use SKIP
+  LOCKED, finishing is guarded by `locked_by`, and the scheduler takes an advisory lock. These are the
+  same guarantees that make several `run_worker` processes safe (D1, D2), so no code changes are needed.
+- **Trade-off, stated plainly everywhere (README, deploy.md, render.yaml):** monitoring pauses whenever
+  the instance sleeps, restarts or redeploys. Missed intervals are not replayed.
+- **Staying awake:**
+  - Render spins a free service down after 15 min without inbound HTTP, so an external pinger
+    (cron-job.org) requests `/api/health/live/` every 10 min.
+  - 750 free instance hours per workspace cover one service for a full month (at most 744 h), and no
+    second free service.
+- **Terms risk:**
+  - Render's AUP prohibits attempts to "bypass, circumvent, or defeat any access or usage restrictions".
+    A keep-alive pinger can reasonably be read as that.
+  - The free-tier docs neither allow nor forbid it explicitly.
+  - Enforcement is at Render's discretion. Fallback: the $7 Starter worker (option a).
+- **Egress budget (measured):**
+  - Supabase Free allows 5 GB/month, and pooler traffic counts.
+  - Idle polling with 2 threads at a 1 s poll measured 2.56 GB/month of server-to-client bytes (empty
+    claim 419 B, heartbeat 380 B, idle tick 730 B; no TLS).
+  - `WORKER_POLL_SECONDS=3` brings that to about 1.1 GB/month. The cost is up to 3 s of extra delay
+    before a due job starts.
+- **Alternatives rejected:**
+  - Option (a) costs $7/month, which Humayun declined for now.
+  - Option (b) means operating a VM.
+  - Adding `LISTEN/NOTIFY` to avoid polling would be new code, and it needs a session-mode connection held
+    open. It's only worth doing if egress proves too high.
