@@ -20,10 +20,13 @@ while it wakes up. Monitoring only runs while it is awake (see [Known limits](#k
 | Status page (JSON) | https://statusping-3xwa.onrender.com/status/demo/ |
 | Health (web + worker heartbeat) | https://statusping-3xwa.onrender.com/api/health/ |
 
-**Demo logins** (a demo-only password, deliberately public): `owner@statusping.example` (owner) and
-`viewer@statusping.example` (read-only), password `DEMO_PASSWORD_PLACEHOLDER`. Get a token with
-`POST /api/auth/token/`, then use **Authorize** in the docs. The demo org has three monitors, one of
-which (`httpbin.org/status/500`) is always down, so there is always an open incident to look at.
+**Demo logins:** `owner@statusping.example` (owner) and `viewer@statusping.example` (read-only). The
+password isn't published, but it's available on request. Without it, register your own account with
+`POST /api/auth/register/` and create an org. Then get a token with `POST /api/auth/token/` and use
+**Authorize** in the docs.
+
+The public demo status page needs no login. Its org has three monitors, one of which
+(`httpbin.org/status/500`) is always down, so there is always an open incident to look at.
 
 ## How it fits together
 
